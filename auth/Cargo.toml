@@ -1,0 +1,17 @@
+[package]
+name = "auth"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.46.1", features = ["full"] }
+serde = { version = "1.0.219", features = ["derive"] }
+axum = "0.8.4"
+axum-extra = { version = "0.10.1", features = ["cookie"]}
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+josekit = "0.10.3"
+diesel = { version = "2.2.11", features = ["postgres", "uuid"] }
+uuid =  { version = "1.17.0", features = ["serde", "v4"] }
+scrypt = "0.11.0"
+pq-sys = { version = "0.7.2", features = ["bundled" ] }
