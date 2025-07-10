@@ -8,7 +8,11 @@
         <script src="/static/js/app.js" defer></script>
     </head>
     <body>
-        <b>Hello!</b>
+        <div>
+            <form id="upload" enctype="multipart/form-data" method="post" action="/upload/file">
+                <input type="file" name="file" id="file" required>
+                <button type="submit">Upload</button>
+        </div>        
 
     </body> 
 </html>

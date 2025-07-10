@@ -29,6 +29,7 @@ use scrypt::{
 };
 
 use tracing;
+use tracing_subscriber::filter;
 use tracing_subscriber;
 
 use serde::{Deserialize, Serialize, ser::SerializeStruct };
@@ -87,12 +88,17 @@ impl Serialize for LoginResponse {
 async fn verify_jwt_via_cookie(cookie_jar: CookieJar) -> StatusCode {
     let token = match cookie_jar.get("session") {
         Some(cookie) => cookie.value().to_string(),
-        None => return StatusCode::UNAUTHORIZED,
+        None => { 
+            tracing::debug!("No session cookie found");
+            return StatusCode::UNAUTHORIZED;
+        }
     };
 
     if verify_token(&token) {
+        tracing::debug!("Token verification successful");
         StatusCode::OK
     } else {
+        tracing::debug!("Token verification failed");
         StatusCode::UNAUTHORIZED
     }
 }
@@ -137,9 +143,10 @@ async fn login_handler(Json(payload): Json<LoginRequest>) -> impl IntoResponse {
     let cookie;
     if let Some(user) = user_opt {
         if password_equals(&user.password_hash, &payload.password) {
+            tracing::debug!("User {} logged in successfully", user.id);
             cookie = format!("session={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200", generate_jwt(user));
         } else {
-            tracing::info!("Invalid password for user: {}", user.id);
+            tracing::debug!("Invalid password for user: {}", user.id);
             let json = Json(LoginResponse {
                 res: Err("Invalid username or password".to_string()),
             });
@@ -148,7 +155,7 @@ async fn login_handler(Json(payload): Json<LoginRequest>) -> impl IntoResponse {
        
 
     } else {
-        tracing::info!("User not found: {}", payload.username);
+        tracing::debug!("User not found: {}", payload.username);
         let json = Json(LoginResponse {
             res: Err("Invalid username or password".to_string()),
         });
@@ -223,32 +230,64 @@ fn verify_token(token: &str) -> bool {
     let secret_key = env::var("SIGNING_KEY").expect("SIGNING_KEY environment variable not set");
     let issuer = env::var("ISSUER").expect("ISSUER environment variable not set");
     let audience = env::var("AUDIENCE").expect("AUDIENCE environment variable");
+    let now = SystemTime::now();
 
     let verifier = HS256.verifier_from_bytes(secret_key.as_bytes())
         .expect("Failed to create verifier from secret key");
 
 
     if let Ok((payload, _)) = jwt::decode_with_verifier(token, &verifier) {
-       if payload.issuer().is_some() && payload.issuer().unwrap() == &issuer &&
-          payload.audience().is_some() && payload.audience().unwrap().contains(&audience.as_str()) &&
-          payload.subject().is_some() &&
-          payload.issued_at().is_some() &&
-          payload.not_before().is_some() &&
-          payload.expires_at().is_some() {
-            true
-        } else {
-            false 
+
+        if payload.expires_at().is_none() || payload.expires_at().unwrap() <= now {
+            tracing::debug!("Token verification failed: Token has expired");
+            return false;
         }
+
+        if payload.issuer().is_none() || payload.issuer().unwrap() != &issuer {
+            tracing::debug!("Token verification failed: Invalid issuer");
+            return false;
+        }
+
+        if payload.audience().is_none() || !payload.audience().unwrap().contains(&audience.as_str()) {
+            tracing::debug!("Token verification failed: Invalid audience");
+            return false;
+        }
+
+        if payload.subject().is_none() {
+            tracing::debug!("Token verification failed: Missing subject");
+            return false;
+        }
+
+        if payload.issued_at().is_none() || payload.issued_at().unwrap() > now {
+            tracing::debug!("Token verification failed: Invalid issued at time");
+            return false;
+        }
+
+        if payload.not_before().is_none() || payload.not_before().unwrap() > now {
+            tracing::debug!("Token verification failed: Invalid not before time");
+            return false;
+        }
+
+        return true;
     } else {
+        tracing::debug!("Token verification failed: Invalid token");
         false
     }
 }
 
+/// Checks if the provided password matches the hashed password.
+/// 
+/// # Arguments
+/// * `hash`: The hashed password.
+/// * `password`: The password to check.
+/// 
+/// # Returns
+/// * `true` if the password matches the hash.
+/// * `false` if the password does not match the hash.
+/// 
+/// # Panics
+/// * If the password hash cannot be parsed.
 fn password_equals(hash: &str, password: &str) -> bool {
-    tracing::info!("Verifying password against hash: {}", hash);
-
-
-
     let parsed_hash = PasswordHash::new(hash).expect("Failed to parse password hash");
     Scrypt.verify_password(password.as_bytes(), &parsed_hash).is_ok()
 }
@@ -259,6 +298,11 @@ fn password_equals(hash: &str, password: &str) -> bool {
 async fn main() {
 
     tracing_subscriber::fmt()
+        .with_file(true)
+        .with_line_number(true)
+        .with_level(true)
+        .pretty()
+        .with_max_level(filter::LevelFilter::DEBUG)
         .init();
 
     let app = Router::new()

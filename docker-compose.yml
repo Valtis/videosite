@@ -4,15 +4,11 @@ services:
     ports:
       - 8080:80
     volumes:
-      - ./proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./dev-services/proxy/nginx.conf:/etc/nginx/nginx.conf:ro
   frontend:
     build: 
       context: frontend
       dockerfile: Dockerfile
-    environment:
-      - AWS_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=test
-      - AWS_SECRET_ACCESS_KEY=test
   auth:
     build: 
       context: auth
@@ -22,6 +18,32 @@ services:
       - ISSUER=http://localhost:8080
       - AUDIENCE=http://localhost:8080
       - DATABASE_URL=postgres://root:root@postgresql:5432/user_db
+  ingestion:
+    build: 
+      context: . # Build context is the root of the project because we pull the libs directory
+      dockerfile: ingestion/Dockerfile
+    environment:
+      - DATABASE_URL=postgres://root:root@postgresql:5432/ingestion_db
+      - AUTH_SERVICE_URL=http://auth:3000
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ENDPOINT_URL_S3=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=keyid
+      - AWS_SECRET_ACCESS_KEY=supersecretkey
+      - USE_PATH_STYLE_BUCKETS=true
+      - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-queue
+  virus-scan:
+    build: 
+      context: virus-scan
+      dockerfile: Dockerfile
+    environment:
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=keyid
+      - AWS_SECRET_ACCESS_KEY=supersecretkey
+      - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-queue
+    depends_on:
+      - localstack
   postgresql:
     image: postgres:17.5
     environment:
@@ -31,16 +53,17 @@ services:
       - ./init_db.sql:/docker-entrypoint-initdb.d/0001_init_db.sql
     ports:
       - 54320:5432
-#
-#  localstack:
-#    image: localstack/localstack
-#    ports:
-#      - "4566:4566"
-#    environment:
-#      - SERVICES=s3,sqs,eventbridge
-#      - DEFAULT_REGION=us-east-1
-#    volumes:
-#      - ./localstack:/docker-entrypoint-initaws.d
+
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - AWS_ACCESS_KEY_ID=keyid 
+      - AWS_SECRET_ACCESS_KEY=supersecretkey
+      - SERVICES=s3,sqs,eventbridge
+    volumes:
+      - ./dev-services/localstack/:/etc/localstack/init/ready.d/
   
     
 
