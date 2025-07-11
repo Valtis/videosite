@@ -39,4 +39,11 @@ FROM alpine:3.22
 
 COPY --from=builder /app/ingestion/target/x86_64-unknown-linux-musl/release/ingestion /usr/local/bin/ingestion
 
+# Create a non-root user without login priviledges to reduce the potential attack surface somewhat
+RUN addgroup -g 1000 ingestionuser && \
+    adduser -D -u 1000 -G ingestionuser ingestionuser && \
+    chown ingestionuser:ingestionuser /usr/local/bin/ingestion
+
+USER ingestionuser
+
 ENTRYPOINT [ "ingestion" ]

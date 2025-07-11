@@ -5,8 +5,7 @@ RUN apk add --no-cache \
     openssl-dev \
     openssl-libs-static \
     pkgconf \
-    libpq-dev \
-    clamav
+    libpq-dev
     
 COPY ./Cargo.toml /app/Cargo.toml
 COPY ./Cargo.lock /app/Cargo.lock
@@ -37,6 +36,16 @@ FROM clamav/clamav:1.4.3
 #FROM alpine:3.22
 
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/virus-scan /usr/local/bin/virus-scan
+
+# Update ClamAV configuration to allow larger files
+RUN sed -i "s/^.*#.*StreamMaxLength.*/StreamMaxLength 200M/" /etc/clamav/clamd.conf
+
+# Create a non-root user without login priviledges to reduce the potential attack surface somewhat
+RUN addgroup -g 1000 virusscanuser && \
+    adduser -D -u 1000 -G virusscanuser virusscanuser && \
+    chown virusscanuser:virusscanuser /usr/local/bin/virus-scan
+
+# Run as root for now, as clamav needs root to run. The script will switch to the non-root user later.
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 ENTRYPOINT [ "/usr/local/bin/entrypoint.sh" ]

@@ -6,18 +6,14 @@ use clamav_client;
 use tracing_subscriber::filter;
 use reqwest;
 use serde_json;
-
-
 use futures_util::stream::StreamExt;
-//use futures_util::future::future::FutureExt;
-//use futures_util::stream::stream::StreamExt;
-//use generic_array::functional::FunctionalSequence;
-//use std::iter::Iterator;
 
 
 #[derive(Debug, serde::Deserialize)]
 struct UploadMessage {
     pub presigned_url: String,
+    pub file_size: usize,
+    pub file_name: String,
 }
 
 struct UploadEvent {
@@ -49,12 +45,32 @@ async fn main() {
             });
 
         if let Some(upload_event) = upload_event_opt {
+            let max_size_str = env::var("SCAN_MAX_SIZE_MEGABYTES").unwrap_or("100".to_string());
 
-            tracing::info!("Received presigned URL: {}", upload_event.message.presigned_url);
-            if let Ok(_) = scan_file(&upload_event.message.presigned_url).await {
-                tracing::info!("File scan completed successfully, no viruses found.");
+            let max_size = usize::from_str_radix(&max_size_str, 10).unwrap_or(100) * 1024 * 1024; // Convert to bytes
+
+            let mut scan_success = false;
+            if upload_event.message.file_size < max_size {
+
+                tracing::info!("Scanning file: {}", upload_event.message.file_name);
+                if let Ok(_) = scan_file(&upload_event.message.presigned_url).await {
+                    tracing::debug!("File scan completed successfully, no viruses found.");
+                    scan_success = true;
+                } else {
+                    tracing::warn!("File scan failed or file is infected with a virus.");
+                }
             } else {
-                tracing::warn!("File scan failed or file is infected with a virus.");
+                tracing::warn!("File {} size {} exceeds the maximum allowed size of {} bytes, skipping scan.",
+                    upload_event.message.file_name,
+                    upload_event.message.file_size,
+                    max_size
+                );
+                scan_success = true; // Treat as clean if we skip the scan
+            }
+
+            if scan_success {
+                tracing::debug!("File scan completed successfully, queuing virus scan completed event.");
+                queue_virus_scan_completed_event(upload_event.message.presigned_url, upload_event.message.file_name).await;
             }
 
 
@@ -117,16 +133,14 @@ async fn receive_upload_notification(client: &Client, queue_url: &str) -> Result
 /// * `Result<bool, Box<dyn std::error::Error>>` - If file is fine, returns `Ok(true)`, 
 ///
 async fn scan_file(presigned_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Simulate a virus scan by just logging the URL
-    tracing::info!("Scanning file at presigned URL: {}", presigned_url);
-
+    
     let http_client = reqwest::Client::new(); 
     let clamd_tcp = clamav_client::tokio::Tcp{ host_address: "localhost:3310" };
 
     let clamd_available =  clamav_client::tokio::ping(clamd_tcp).await;
 
     match clamd_available {
-        Ok(_) => tracing::info!("ClamAV is available"),
+        Ok(_) => tracing::debug!("ClamAV is available"),
         Err(err) => {
             tracing::error!("ClamAV is not available: {}", err);
             return Err(Box::new(err));
@@ -142,9 +156,6 @@ async fn scan_file(presigned_url: &str) -> Result<(), Box<dyn std::error::Error>
     let stream = reqwest_stream.map(|result| {
     result.map_err(|err| io::Error::new(io::ErrorKind::Other, err))
     });
-
-    
-       
 
     let scan_response = clamav_client::tokio::scan_stream(stream, clamd_tcp, None).await
         .map_err(|err| {
@@ -181,4 +192,25 @@ async fn delete_message(client: &Client, queue_url: &str, receipt_handle: &str) 
 
     tracing::info!("Message deleted successfully");
     Ok(())
+}
+
+
+async fn queue_virus_scan_completed_event(presigned_uri: String, file_name: String) {
+    let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
+    let queue_url = env::var("VIRUS_SCAN_QUEUE_URL").expect("VIRUS_SCAN_QUEUE_URL not set");
+
+
+    let json_msg = serde_json::json!({
+        "presigned_url": presigned_uri,
+        "file_name": file_name,
+    }).to_string(); 
+    
+    tracing::info!("Sending message {} to SQS queue: {}", json_msg, queue_url);
+
+    sqs_client.send_message()
+        .queue_url(queue_url)
+        .message_body(json_msg)
+        .send()
+        .await
+        .expect("Failed to send message to SQS");
 }

@@ -31,7 +31,7 @@ services:
       - AWS_ACCESS_KEY_ID=keyid
       - AWS_SECRET_ACCESS_KEY=supersecretkey
       - USE_PATH_STYLE_BUCKETS=true
-      - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-queue
+      - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-finished-queue
   virus-scan:
     build: 
       context: virus-scan
@@ -41,7 +41,28 @@ services:
       - AWS_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=keyid
       - AWS_SECRET_ACCESS_KEY=supersecretkey
-      - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-queue
+      - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-finished-queue
+      - VIRUS_SCAN_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/virus-scan-clear-queue
+      - SCAN_MAX_SIZE_MEGABYTES=200
+    depends_on:
+      - localstack
+  metadata:
+    build: 
+      context: metadata
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgres://root:root@postgresql:5432/metadata_db
+      - AUTH_SERVICE_URL=http://auth:3000
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=keyid
+      - AWS_SECRET_ACCESS_KEY=supersecretkey
+      - USE_PATH_STYLE_BUCKETS=true
+      - VIRUS_SCAN_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/virus-scan-clear-queue
+      - VIDEO_PROCESSING_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/video-processing-queue
+      - AUDIO_PROCESSING_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/audio-processing-queue
+      - IMAGE_PROCESSING_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/image-processing-queue
+      - METADATA_QUEUE_URL=http://sqs.us-east-
     depends_on:
       - localstack
   postgresql:
@@ -53,7 +74,6 @@ services:
       - ./init_db.sql:/docker-entrypoint-initdb.d/0001_init_db.sql
     ports:
       - 54320:5432
-
   localstack:
     image: localstack/localstack
     ports:

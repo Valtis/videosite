@@ -1,5 +1,7 @@
 #!/bin/bash
 awslocal s3 mb s3://upload/
-awslocal sqs create-queue --queue-name upload-queue
-awslocal sqs create-queue --queue-name type-detection-queue
-awslocal sqs create-queue --queue-name transcoding-queue
+awslocal sqs create-queue --queue-name upload-finished-queue
+awslocal sqs create-queue --queue-name virus-scan-clear-queue
+awslocal sqs create-queue --queue-name video-processing-queue
+awslocal sqs create-queue --queue-name audio-processing-queue
+awslocal sqs create-queue --queue-name image-processing-queue

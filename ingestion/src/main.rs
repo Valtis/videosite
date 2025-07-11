@@ -28,15 +28,15 @@ use tracing_subscriber::filter;
 async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
 
     while let Some(field) = multipart.next_field().await.unwrap() {
-        let presigned_uri = upload_file(field).await;
+        let (presigned_uri, file_name, file_size) = upload_file(field).await;
         tracing::info!("File uploaded successfully, presigned URL: {}", presigned_uri);
-        queue_upload_event(presigned_uri).await;
+        queue_upload_event(presigned_uri, &file_name, file_size).await;
     }
 
     return(StatusCode::OK, "upload handler reached").into_response();
 }
 
-async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> String {
+async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String, String, usize) {
 
     let name = field.name().unwrap_or("not set").to_string();
     let content_type = field.content_type().map(|ct| ct.to_string());
@@ -74,13 +74,14 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> String {
     tracing::info!("Created multipart upload with ID: {}", upload_id);
 
     let mut part_number = 1;
+    let mut file_size = 0;
     let mut completed_parts = Vec::new();
     let mut buffer = Vec::new();
     while let Some(chunk) = field.chunk().await.expect("Failed to read chunk") {
+        file_size += chunk.len();
         buffer.extend_from_slice(&chunk);
 
         if buffer.len() > 5 * 1024 * 1024 { 
-            tracing::info!("Uploading part {} with size: {}", part_number, buffer.len());
             upload_chunk(&client, buffer, &object_name, upload_id, part_number, &mut completed_parts).await;
             buffer = Vec::new(); // Reset buffer after uploading
             part_number += 1;
@@ -88,7 +89,6 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> String {
     }
 
     if !buffer.is_empty() {
-        tracing::info!("Uploading final part {} with size: {}", part_number, buffer.len());
         upload_chunk(&client, buffer, &object_name, upload_id, part_number, &mut completed_parts).await;
     }
 
@@ -108,7 +108,7 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> String {
         .await
         .expect("Failed to complete multipart upload");
 
-    client.get_object()
+    (client.get_object()
         .bucket("upload")
         .key(&object_name)
         .presigned(
@@ -118,7 +118,10 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> String {
                 .expect("Failed to build presigning config")
         ).await
         .expect("Failed to generate presigned URL")
-        .uri().to_string()
+        .uri().to_string(),
+        object_name,
+        file_size
+    )
 }
 
 async fn upload_chunk(
@@ -138,24 +141,25 @@ async fn upload_chunk(
         .body(bytes.into())
         .send()
         .await
-        .expect("failed to upload part");
+        .expect("Failed to upload part");
 
-
-    tracing::info!("uploaded part {} with etag: {}", part_number, part.e_tag().unwrap_or("not set"));
     completed_parts.push(s3::types::CompletedPart::builder()
         .part_number(part_number)
         .e_tag(part.e_tag().unwrap_or("not set").to_string())
         .build());
 }
 
-async fn queue_upload_event(presigned_uri: String) {
+async fn queue_upload_event(presigned_uri: String, file_name: &str, file_size: usize) {
     let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
     let queue_url = env::var("UPLOAD_QUEUE_URL").expect("UPLOAD_QUEUE_URL not set");
 
 
     let json_msg = serde_json::json!({
         "presigned_url": presigned_uri,
+        "file_size": file_size,
+        "file_name": file_name,
     }).to_string(); 
+
     tracing::info!("Sending message {} to SQS queue: {}", json_msg, queue_url);
 
     sqs_client.send_message()
