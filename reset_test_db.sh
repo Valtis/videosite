@@ -3,6 +3,7 @@
 set -ueo pipefail
 
 ./drop_database.sh auth test
+./drop_database.sh resource test
 ./apply_all_migrations.sh test
 
 DB_HOST="127.0.0.1"

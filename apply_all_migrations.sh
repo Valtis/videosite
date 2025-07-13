@@ -12,4 +12,5 @@ fi
 
 
 ./auth/db/apply_migrations.sh
+./resource-server/db/apply_migrations.sh
 

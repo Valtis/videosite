@@ -24,6 +24,11 @@ case "$1" in
     # Rollback migrations for the auth project
     ./auth/db/rollback_migration.sh
     ;;
+  resource)
+    # Rollback migrations for the resource project
+    ./resource-server/db/rollback_migration.sh
+    ;;
+
   *)
     echo "Unknown project: $1"
     exit 1

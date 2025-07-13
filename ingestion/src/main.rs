@@ -2,14 +2,8 @@ use std::env;
 
 use axum::{
     extract::{
-        Multipart,
-        DefaultBodyLimit,
-    },
-    middleware::from_fn,
-    http::StatusCode, 
-    response::IntoResponse, 
-    routing::{get, post}, 
-    Router
+        DefaultBodyLimit, Multipart
+    }, http::StatusCode, middleware::from_fn, response::IntoResponse, routing::{get, post}, Extension, Router
 };
 
 use uuid;
@@ -21,22 +15,26 @@ use s3::types::CompletedMultipartUpload;
 
 use tower::ServiceBuilder;
 
-use auth_check::auth_middleware;
+use auth_check::{auth_middleware, UserInfo};
 
 use tracing_subscriber::filter;
 
-async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
+const UPLOAD_BUCKET: &str = "upload"; 
+
+#[axum::debug_handler]
+async fn upload_handler(user_info: Extension<UserInfo>, mut multipart: Multipart) -> impl IntoResponse {
+
 
     while let Some(field) = multipart.next_field().await.unwrap() {
-        let (presigned_uri, file_name, file_size) = upload_file(field).await;
+        let (presigned_uri, object_name, file_name, file_size) = upload_file(field).await;
         tracing::info!("File uploaded successfully, presigned URL: {}", presigned_uri);
-        queue_upload_event(presigned_uri, &file_name, file_size).await;
+        queue_upload_event(&user_info, presigned_uri, &object_name, &file_name, file_size).await;
     }
 
     return(StatusCode::OK, "upload handler reached").into_response();
 }
 
-async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String, String, usize) {
+async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String, String, String, usize) {
 
     let name = field.name().unwrap_or("not set").to_string();
     let content_type = field.content_type().map(|ct| ct.to_string());
@@ -64,7 +62,7 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String,
     tracing::info!("Uploading file to S3 with object name: {}", object_name);
 
     let multi_part_upload = client.create_multipart_upload()
-        .bucket("upload") 
+        .bucket(UPLOAD_BUCKET) 
         .key(object_name.clone())
         .send()
         .await
@@ -100,7 +98,7 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String,
         .build();
 
     client.complete_multipart_upload()
-        .bucket("upload")
+        .bucket(UPLOAD_BUCKET)
         .key(&object_name)
         .multipart_upload(completed_multipart_upload)
         .upload_id(upload_id)
@@ -109,17 +107,18 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String,
         .expect("Failed to complete multipart upload");
 
     (client.get_object()
-        .bucket("upload")
+        .bucket(UPLOAD_BUCKET)
         .key(&object_name)
         .presigned(
             PresigningConfig::builder()
-                .expires_in(std::time::Duration::from_secs(3600)) // 1 hour
+                .expires_in(std::time::Duration::from_secs(3600*7)) // 7 hours, this could be a video and processing can take a while
                 .build()
                 .expect("Failed to build presigning config")
         ).await
         .expect("Failed to generate presigned URL")
         .uri().to_string(),
-        object_name,
+        object_name.clone(),
+        filename.unwrap_or(object_name),
         file_size
     )
 }
@@ -134,7 +133,7 @@ async fn upload_chunk(
 ) {
     let bytes = ByteStream::from(buffer);
     let part = client.upload_part()
-        .bucket("upload") 
+        .bucket(UPLOAD_BUCKET) 
         .key(object_name)
         .part_number(part_number)
         .upload_id(upload_id)
@@ -149,25 +148,44 @@ async fn upload_chunk(
         .build());
 }
 
-async fn queue_upload_event(presigned_uri: String, file_name: &str, file_size: usize) {
+async fn queue_upload_event(user_info: &UserInfo, presigned_uri: String, object_name: &str, file_name: &str, file_size: usize) {
     let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
-    let queue_url = env::var("UPLOAD_QUEUE_URL").expect("UPLOAD_QUEUE_URL not set");
+    let upload_queue_url = env::var("UPLOAD_QUEUE_URL").expect("UPLOAD_QUEUE_URL not set");
+    let resource_status_queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
 
 
-    let json_msg = serde_json::json!({
+    let upload_json_msg = serde_json::json!({
         "presigned_url": presigned_uri,
         "file_size": file_size,
-        "file_name": file_name,
+        "object_name": object_name,
     }).to_string(); 
 
-    tracing::info!("Sending message {} to SQS queue: {}", json_msg, queue_url);
+    let resource_status_json_msg = serde_json::json!({
+        "user_id": user_info.user_id,
+        "object_name": object_name,
+        "file_name": file_name,
+        "status": "uploaded",
+        "origin_file_path": format!("/{}/{}", UPLOAD_BUCKET, object_name),
+    }).to_string();
+
+    tracing::info!("Sending message {} to SQS queue: {}", upload_json_msg, upload_queue_url);
 
     sqs_client.send_message()
-        .queue_url(queue_url)
-        .message_body(json_msg)
+        .queue_url(upload_queue_url)
+        .message_body(upload_json_msg)
         .send()
         .await
-        .expect("Failed to send message to SQS");
+        .expect("Failed to send upload message to SQS");
+
+    tracing::info!("Sending resource status message {} to SQS queue: {}", resource_status_json_msg, resource_status_queue_url);
+    sqs_client.send_message()
+        .queue_url(resource_status_queue_url)
+        .message_body(resource_status_json_msg)
+        .send()
+        .await
+        .expect("Failed to send resource status message to SQS");
+
+
 }
 
 #[tokio::main]

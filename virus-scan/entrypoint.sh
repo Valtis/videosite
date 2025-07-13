@@ -6,6 +6,10 @@ echo "Updating ClamAV configuration..."
 # Ensure the config line is not commented out, and update the value
 sed -i "s/^.*#.*StreamMaxLength.*/StreamMaxLength ${SCAN_MAX_SIZE_MEGABYTES}M/" /etc/clamav/clamd.conf
 
+# Updating the ClamAV database
+echo "Updating ClamAV database..."
+freshclam
+
 # Start the ClamAV daemon
 echo "Starting ClamAV daemon..."
 clamd &

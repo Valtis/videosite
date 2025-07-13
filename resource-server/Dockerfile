@@ -18,9 +18,9 @@ RUN mkdir -p /app/src && \
     echo 'fn main() { println!("Hello, world!"); }' > /app/src/main.rs && \
     cd /app && \
     cargo build --release --target x86_64-unknown-linux-musl && \
-    cargo clean --target x86_64-unknown-linux-musl -p virus-scan && \
+    cargo clean --target x86_64-unknown-linux-musl -p resource-server && \
     rm -rf /app/src && \
-    rm -rf /app/target/x86_64-unknown-linux-musl/release/deps/virus-scan*
+    rm -rf /app/target/x86_64-unknown-linux-musl/release/deps/resource-server*
 
 # -- end caching dependencies
 
@@ -32,17 +32,16 @@ WORKDIR /app
 RUN ls /app/target/x86_64-unknown-linux-musl/release -la
 RUN touch /app/src/main.rs && cargo build --release --target x86_64-unknown-linux-musl
 
-FROM clamav/clamav:1.4.3
-#FROM alpine:3.22
 
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/virus-scan /usr/local/bin/virus-scan
+FROM alpine:3.22
+
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/resource-server /usr/local/bin/resource-server
 
 # Create a non-root user without login priviledges to reduce the potential attack surface somewhat
-RUN addgroup -g 1000 virusscanuser && \
-    adduser -D -u 1000 -G virusscanuser virusscanuser && \
-    chown virusscanuser:virusscanuser /usr/local/bin/virus-scan
+RUN addgroup -g 1000 resourceuser && \
+    adduser -D -u 1000 -G resourceuser resourceuser && \
+    chown resourceuser:resourceuser /usr/local/bin/resource-server
 
-# Run as root for now, as clamav needs root to run. The script will switch to the non-root user later.
+USER resourceuser
 
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-ENTRYPOINT [ "/usr/local/bin/entrypoint.sh" ]
+ENTRYPOINT [ "resource-server" ]

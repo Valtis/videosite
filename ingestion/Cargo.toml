@@ -7,7 +7,7 @@ edition = "2024"
 tokio = { version = "1.46.1", features = ["full"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
-axum = { version = "0.8.4", features = ["multipart"] }
+axum = { version = "0.8.4", features = ["multipart", "macros"] }
 auth-check = { path = "../libs/auth-check" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19" }

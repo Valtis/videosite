@@ -13,8 +13,8 @@ use futures_util::stream::StreamExt;
 struct UploadMessage {
     pub presigned_url: String,
     pub file_size: usize,
-    pub file_name: String,
-}
+    pub object_name: String,
+ }
 
 struct UploadEvent {
     pub message: UploadMessage,
@@ -52,7 +52,7 @@ async fn main() {
             let mut scan_success = false;
             if upload_event.message.file_size < max_size {
 
-                tracing::info!("Scanning file: {}", upload_event.message.file_name);
+                tracing::info!("Scanning file: {}", upload_event.message.object_name);
                 if let Ok(_) = scan_file(&upload_event.message.presigned_url).await {
                     tracing::debug!("File scan completed successfully, no viruses found.");
                     scan_success = true;
@@ -61,7 +61,7 @@ async fn main() {
                 }
             } else {
                 tracing::warn!("File {} size {} exceeds the maximum allowed size of {} bytes, skipping scan.",
-                    upload_event.message.file_name,
+                    upload_event.message.object_name,
                     upload_event.message.file_size,
                     max_size
                 );
@@ -70,7 +70,7 @@ async fn main() {
 
             if scan_success {
                 tracing::debug!("File scan completed successfully, queuing virus scan completed event.");
-                queue_virus_scan_completed_event(upload_event.message.presigned_url, upload_event.message.file_name).await;
+                queue_virus_scan_completed_event(upload_event.message.presigned_url, upload_event.message.object_name).await;
             }
 
 
@@ -195,14 +195,14 @@ async fn delete_message(client: &Client, queue_url: &str, receipt_handle: &str) 
 }
 
 
-async fn queue_virus_scan_completed_event(presigned_uri: String, file_name: String) {
+async fn queue_virus_scan_completed_event(presigned_uri: String, object_name: String) {
     let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
     let queue_url = env::var("VIRUS_SCAN_QUEUE_URL").expect("VIRUS_SCAN_QUEUE_URL not set");
 
 
     let json_msg = serde_json::json!({
         "presigned_url": presigned_uri,
-        "file_name": file_name,
+        "object_name": object_name,
     }).to_string(); 
     
     tracing::info!("Sending message {} to SQS queue: {}", json_msg, queue_url);

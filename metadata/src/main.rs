@@ -15,7 +15,7 @@ use tokio::io;
 #[derive(Debug, serde::Deserialize)]
 struct ScanMessage {
     pub presigned_url: String,
-    pub file_name: String,
+    pub object_name: String,
 }
 
 struct ScanEvent {
@@ -125,10 +125,7 @@ enum Track {
 async fn main() {
 
     tracing_subscriber::fmt()
-        .with_file(true)
-        .with_line_number(true)
         .with_level(true)
-        .pretty()
         .with_max_level(filter::LevelFilter::INFO)
         .init();
 
@@ -144,7 +141,7 @@ async fn main() {
             });
 
         if let Some(scan_event) = scan_event_opt {
-            tracing::info!("Received scan event for file: {}", scan_event.message.file_name);
+            tracing::info!("Received scan event for file: {}", scan_event.message.object_name);
 
             let file_type = discover_filetype_and_metadata(&scan_event.message.presigned_url).await
                 .unwrap_or_else(|err| {
@@ -153,10 +150,10 @@ async fn main() {
                 });
 
             if let FileType::Other = file_type {
-                tracing::warn!("File {} is not a recognized media type, skipping further processing.", scan_event.message.file_name);
+                tracing::warn!("File {} is not a recognized media type, skipping further processing.", scan_event.message.object_name);
             } else {
-                tracing::info!("File {} is a recognized media type ({:?})", scan_event.message.file_name, file_type);
-                queue_metadata_extraction_completed_event(scan_event.message.presigned_url, scan_event.message.file_name, file_type).await;
+                tracing::info!("File {} is a recognized media type ({:?})", scan_event.message.object_name, file_type);
+                queue_metadata_extraction_completed_event(scan_event.message.presigned_url, scan_event.message.object_name, file_type).await;
             }
 
 
@@ -379,12 +376,12 @@ fn extract_image_information(image_track: &Track) -> FileType {
     }
 }
 
-async fn queue_metadata_extraction_completed_event(presigned_uri: String, file_name: String, file_type: FileType) {
+async fn queue_metadata_extraction_completed_event(presigned_uri: String, object_name: String, file_type: FileType) {
     let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
 
     let json_msg = serde_json::json!({
         "presigned_url": presigned_uri,
-        "file_name": file_name,
+        "object_name": object_name,
         "file_type": file_type,
     }).to_string(); 
 

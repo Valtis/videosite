@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use axum_extra::extract::CookieJar;
 use reqwest;
 
+use base64;
+
 use axum::{
     extract::{
         Request
@@ -14,10 +16,19 @@ use axum::{
     response::Response
 };
 
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UserInfo {
+    #[serde(rename = "sub")]
+    pub user_id: String,
+    pub display_name: String,
+    pub email: String,
+}
+
 // implement a tower middleware that fetches the auth token from the cookies or Authorization header, and then delegates
 // the authentication to the authorization service
 
-pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, StatusCode> {
+pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, StatusCode> {
     // check if we have an authorization header with a valid token
     let mut token = None;
     if let Some(auth_header) = req.headers().get("Authorization") {
@@ -40,7 +51,21 @@ pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, Statu
     if let Some(token) = token {
         let res =  is_authenticated(&token).await;
         match res {
-            Ok(true) => return Ok(next.run(req).await),
+            Ok(true) => {
+                let claims = token.split('.').nth(1).unwrap();
+                // append the padding, as the base64 decoder requires it
+                let padded_claims = if claims.len() % 4 == 0 {
+                    claims.to_string()
+                } else {
+                    format!("{}{}", claims, "=".repeat(4 - claims.len() % 4))
+                };
+                let decoded_vec = base64::decode(padded_claims).unwrap();
+                let decoded = String::from_utf8(decoded_vec).unwrap();
+                let user_info: UserInfo = serde_json::from_str(&decoded).unwrap();
+
+                req.extensions_mut().insert(user_info);
+                return Ok(next.run(req).await);
+            }
             Ok(false) => {
                 return Err(StatusCode::UNAUTHORIZED);
             }
