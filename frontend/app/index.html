@@ -7,12 +7,17 @@
         <link rel="stylesheet" href="/static/css/styles.css">
         <script src="/static/js/app.js" defer></script>
     </head>
-    <body>
+    <body onload="loadResourcesPoll()">
         <div>
             <form id="upload" enctype="multipart/form-data" method="post" action="/upload/file">
                 <input type="file" name="file" id="file" required>
                 <button type="submit">Upload</button>
         </div>        
+        <div id="resource-grid">
+            <h1>Resources</h1>
+            <div id="resources-container" class="resources-container">
+            </div>
+        </div>
 
     </body> 
 </html>

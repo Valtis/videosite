@@ -6,36 +6,38 @@ RUN apk add --no-cache \
     openssl-libs-static \
     pkgconf \
     libpq-dev
-    
-COPY ./Cargo.toml /app/Cargo.toml
-COPY ./Cargo.lock /app/Cargo.lock
+
+COPY libs/auth-check /app/libs/auth-check
+
+COPY resource-server/Cargo.toml /app/resource-server/Cargo.toml
+COPY resource-server/Cargo.lock /app/resource-server/Cargo.lock
 
 # -- caching dependencies
 # Create a dummy main.rs for cargo to build --something--, 
 # build the application, then remove the dummy main.rs
 # and the final cached binary (so cargo build will not reuse the cached binary) 
-RUN mkdir -p /app/src && \
-    echo 'fn main() { println!("Hello, world!"); }' > /app/src/main.rs && \
-    cd /app && \
+RUN mkdir -p /app/resource-server/src && \
+    echo 'fn main() { println!("Hello, world!"); }' > /app/resource-server/src/main.rs && \
+    cd /app/resource-server && \
     cargo build --release --target x86_64-unknown-linux-musl && \
     cargo clean --target x86_64-unknown-linux-musl -p resource-server && \
-    rm -rf /app/src && \
-    rm -rf /app/target/x86_64-unknown-linux-musl/release/deps/resource-server*
+    rm -rf /app/resource-server/src && \
+    rm -rf /app/resource-server/target/x86_64-unknown-linux-musl/release/deps/resource-server*
 
 # -- end caching dependencies
 
 
-COPY ./src /app/src
+COPY resource-server/src /app/resource-server/src
 
-WORKDIR /app
+WORKDIR /app/resource-server
 
-RUN ls /app/target/x86_64-unknown-linux-musl/release -la
-RUN touch /app/src/main.rs && cargo build --release --target x86_64-unknown-linux-musl
+RUN ls /app/resource-server/target/x86_64-unknown-linux-musl/release -la
+RUN touch /app/resource-server/src/main.rs && cargo build --release --target x86_64-unknown-linux-musl
 
 
 FROM alpine:3.22
 
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/resource-server /usr/local/bin/resource-server
+COPY --from=builder /app/resource-server/target/x86_64-unknown-linux-musl/release/resource-server /usr/local/bin/resource-server
 
 # Create a non-root user without login priviledges to reduce the potential attack surface somewhat
 RUN addgroup -g 1000 resourceuser && \

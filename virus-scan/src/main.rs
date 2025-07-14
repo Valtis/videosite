@@ -70,7 +70,11 @@ async fn main() {
 
             if scan_success {
                 tracing::debug!("File scan completed successfully, queuing virus scan completed event.");
-                queue_virus_scan_completed_event(upload_event.message.presigned_url, upload_event.message.object_name).await;
+                queue_virus_scan_completed_event(&upload_event.message.presigned_url, &upload_event.message.object_name).await;
+                queue_resource_status_update_event(&upload_event.message.object_name, "processing").await;
+            } else {
+                tracing::error!("File scan failed, queuing resource status update event with status 'failed'.");
+                queue_resource_status_update_event(&upload_event.message.object_name, "failed").await;
             }
 
 
@@ -195,7 +199,7 @@ async fn delete_message(client: &Client, queue_url: &str, receipt_handle: &str) 
 }
 
 
-async fn queue_virus_scan_completed_event(presigned_uri: String, object_name: String) {
+async fn queue_virus_scan_completed_event(presigned_uri: &str, object_name: &str) {
     let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
     let queue_url = env::var("VIRUS_SCAN_QUEUE_URL").expect("VIRUS_SCAN_QUEUE_URL not set");
 
@@ -213,4 +217,23 @@ async fn queue_virus_scan_completed_event(presigned_uri: String, object_name: St
         .send()
         .await
         .expect("Failed to send message to SQS");
+}
+
+async fn queue_resource_status_update_event(object_name: &str, status: &str) {
+    let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
+    let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
+
+    let json_msg = serde_json::json!({
+        "object_name": object_name,
+        "status": status,
+    }).to_string(); 
+
+    tracing::info!("Sending resource status update message {} to SQS queue: {}", json_msg, queue_url);
+
+    sqs_client.send_message()
+        .queue_url(queue_url)
+        .message_body(json_msg)
+        .send()
+        .await
+        .expect("Failed to send resource status update message to SQS");
 }

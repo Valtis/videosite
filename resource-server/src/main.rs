@@ -1,4 +1,5 @@
 mod db;
+mod model;
 
 use std::env;
 
@@ -8,19 +9,22 @@ use aws_sdk_sqs::Client;
 
 use tracing_subscriber::filter;
 use serde_json;
+use tower::ServiceBuilder;
 
 
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
+    middleware::from_fn,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get},
     Router,
 };
 
 
-use db::create_resource;
+use db::*;
 
+use auth_check::{auth_middleware, UserInfo};
 
 struct ResourceStatusUpdateEvent {
     pub message: ResourceStatusUpdateMessage,
@@ -37,11 +41,44 @@ enum ResourceStatusUpdateMessage {
         file_name: String,
         origin_file_path: String,
     },
-    Placeholder
+    #[serde(rename = "failed")]
+    ResourceProcessingFailed {
+        object_name: String,
+    },
+    #[serde(rename = "processing")]
+    ResourceProcessingStarted {
+        object_name: String,
+    },
+    #[serde(rename = "type_resolved")]
+    ResourceTypeResolved {
+        object_name: String,
+        resource_type: String,
+    },
+    #[serde(rename = "processed")]
+    ResourceProcessed {
+        object_name: String,
+        storage_path: String,
+    },
 }
 
-async fn list_resources() -> impl IntoResponse{
-    (StatusCode::OK, "TODO!")
+
+/// List resources of the current user.
+/// 
+/// Returns a JSON array of resources.
+/// If no resources are found, returns an empty array.
+/// 
+/// # Arguments
+/// * `user_info` - The user information extracted from the request, containing the user ID
+/// 
+/// Returns a tuple containing the HTTP status code and a JSON response with the list of resources.
+/// 
+async fn list_resources(user_info: Extension<UserInfo>) -> impl IntoResponse{
+    let resources = db::get_active_resources_by_user_id(&user_info.user_id);
+    if resources.is_empty() {
+        return (StatusCode::OK, Json(vec![]));
+    }
+    let resources: Vec<model::Resource> = resources.into_iter().map(model::Resource::from).collect();
+    (StatusCode::OK, Json(resources))
 }
 
 
@@ -69,9 +106,19 @@ async fn resource_status_listener() {
                         origin_file_path,
                     );
                 },
-                ResourceStatusUpdateMessage::Placeholder => {
-                    tracing::warn!("Received placeholder message, no action taken.");
-                }
+                ResourceStatusUpdateMessage::ResourceProcessingFailed { object_name } => {
+                    update_resource_status(object_name, "failed".to_string());
+                },
+                ResourceStatusUpdateMessage::ResourceProcessingStarted { object_name } => {
+                    update_resource_status(object_name, "processing".to_string());
+                },
+                ResourceStatusUpdateMessage::ResourceTypeResolved { object_name, resource_type } => {
+                    update_resource_type(object_name, resource_type);
+                },
+                ResourceStatusUpdateMessage::ResourceProcessed { object_name, storage_path } => {
+                    update_resource_status(object_name.clone(), "processed".to_string());
+                    update_resource_storage(object_name, storage_path);
+                },
             };        
 
 
@@ -150,7 +197,11 @@ async fn main() {
     let app = Router::new()
         .route("/resource/health", get(|| async { "OK" }))
         .route("/resource/list", get(list_resources))
-        ;
+            .layer(
+                ServiceBuilder::new()
+                    .layer(from_fn(auth_middleware))
+            );
+        
         
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await

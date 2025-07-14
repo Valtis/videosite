@@ -5,12 +5,12 @@ services:
       - 8080:80
     volumes:
       - ./dev-services/proxy/nginx.conf:/etc/nginx/nginx.conf:ro
-    restart: on-failure
+    restart: unless-stopped
   frontend:
     build: 
       context: frontend
       dockerfile: Dockerfile
-    restart: on-failure
+    restart: unless-stopped
   auth:
     build: 
       context: auth
@@ -20,7 +20,7 @@ services:
       - ISSUER=http://localhost:8080
       - AUDIENCE=http://localhost:8080
       - DATABASE_URL=postgres://root:root@postgresql:5432/user_db
-    restart: on-failure
+    restart: unless-stopped
   ingestion:
     build: 
       context: . # Build context is the root of the project because we pull the libs directory
@@ -48,10 +48,11 @@ services:
       - AWS_SECRET_ACCESS_KEY=supersecretkey
       - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-finished-queue
       - VIRUS_SCAN_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/virus-scan-clear-queue
+      - RESOURCE_STATUS_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/resource-status-queue
       - SCAN_MAX_SIZE_MEGABYTES=200
     depends_on:
       - localstack
-    restart: on-failure
+    restart: unless-stopped
   metadata:
     build: 
       context: metadata
@@ -67,10 +68,11 @@ services:
       - VIDEO_PROCESSING_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/video-processing-queue
       - AUDIO_PROCESSING_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/audio-processing-queue
       - IMAGE_PROCESSING_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/image-processing-queue
+      - RESOURCE_STATUS_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/resource-status-queue
       - METADATA_QUEUE_URL=http://sqs.us-east-
     depends_on:
       - localstack
-    restart: on-failure
+    restart: unless-stopped
   video-transcoding:
     build: 
       context: video-transcoding
@@ -83,13 +85,14 @@ services:
       - AWS_SECRET_ACCESS_KEY=supersecretkey
       - USE_PATH_STYLE_BUCKETS=true
       - VIDEO_PROCESSING_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/video-processing-queue
+      - RESOURCE_STATUS_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/resource-status-queue
     depends_on:
       - localstack
-    restart: on-failure
+    restart: unless-stopped
   resource-server:
     build: 
-      context: resource-server
-      dockerfile: Dockerfile
+      context: . # Build context is the root of the project because we pull the libs directory
+      dockerfile: resource-server/Dockerfile
     environment:
       - DATABASE_URL=postgres://root:root@postgresql:5432/resource_db
       - AUTH_SERVICE_URL=http://auth:3000
@@ -102,7 +105,7 @@ services:
       - RESOURCE_STATUS_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/resource-status-queue
     depends_on:
       - localstack
-    restart: on-failure
+    restart: unless-stopped
   postgresql:
     image: postgres:17.5
     environment:
@@ -112,7 +115,7 @@ services:
       - ./init_db.sql:/docker-entrypoint-initdb.d/0001_init_db.sql
     ports:
       - 54320:5432
-    restart: on-failure
+    restart: unless-stopped
   localstack:
     image: localstack/localstack
     ports:
@@ -123,8 +126,7 @@ services:
       - SERVICES=s3,sqs,eventbridge
     volumes:
       - ./dev-services/localstack/:/etc/localstack/init/ready.d/
-    restart: on-failure
-  
+    restart: unless-stopped 
     
 
 

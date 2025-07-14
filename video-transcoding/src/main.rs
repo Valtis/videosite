@@ -104,6 +104,8 @@ const TRANSCODING_OPTIONS_1080P: TranscodingOptions = TranscodingOptions {
     video_bitrate: 8*1024*1024,
 };
 
+const RESOURCE_BUCKET_NAME: &'static str = "resource";
+
 #[tokio::main]
 async fn main() {
     println!("Hello from async main");
@@ -117,7 +119,6 @@ async fn main() {
     let client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
 
     loop {
-        tracing::info!("Checking for new messages in the queue...");
         let video_metadata_opt = receive_video_metadata_event(&client, &queue_url).await
             .unwrap_or_else(|err| {
                 tracing::error!("Error receiving metadata notification: {}", err);
@@ -127,9 +128,13 @@ async fn main() {
         if let Some(video_metadata) = video_metadata_opt {
             tracing::info!("Received video metadata for {}: {:?}", video_metadata.message.object_name, video_metadata.message.file_type);
 
-            transcode_video(
-                &video_metadata.message
-            ).await;
+            if let Ok(storage_path) = transcode_video(&video_metadata.message).await {
+                tracing::info!("Video transcoding was completed successfully for {}", video_metadata.message.object_name);
+                queue_resource_processing_completed_event(&video_metadata.message.object_name, &storage_path).await;
+            } else {
+                tracing::error!("Video transcoding failed for {}", video_metadata.message.object_name);
+                queue_resource_status_update_event(&video_metadata.message.object_name, "failed").await;
+            }
             
             delete_message(&client, &queue_url, &video_metadata.receipt_handle)
                 .await
@@ -193,7 +198,7 @@ async fn receive_video_metadata_event(client: &Client, queue_url: &str) -> Resul
 
 async fn transcode_video(
     msg: &MetadataMessage,
-) {
+) -> Result<String, &'static str> {
     tracing::info!("Transcoding video: {}", msg.object_name);
     let FileType::Video { video, audio } = &msg.file_type;
 
@@ -206,8 +211,7 @@ async fn transcode_video(
 
     // create directory at /transcoding<object_name> to store the transcoded files
     let workdir = format!("/transcoding/{}", msg.object_name);
-    std::fs::create_dir_all(&workdir)
-        .expect("Failed to create transcoding directory");
+    std::fs::create_dir_all(&workdir).map_err(|_| "Failed to create work directory")?;
 
     let input_file_path = download_input_file(&msg.presigned_url, &msg.object_name, &workdir).await;
 
@@ -221,19 +225,19 @@ async fn transcode_video(
         ffmpeg_str    
     );
     run_ffmpeg(&input_file_path, &workdir, &ffmpeg_str)
-        .await
-        .expect("Failed to run ffmpeg");
+        .await.map_err(|_| "FFMPEG process failed")?;
 
     // delete the input file after processing, as we will not need it anymore, and we will upload the transcoded files to S3
     // and the presence of this file would force us to filter it out
     std::fs::remove_file(&input_file_path).expect("Failed to delete input file after processing");
+    tracing::info!("Input file {} deleted after processing", input_file_path);
 
     
     transfer_files_to_s3(&workdir, &msg.object_name)
         .await
-        .expect("Failed to transfer files to S3");
+        .map_err(|_| "Failed to transfer files to S3")?;
     
-    tracing::info!("Input file {} deleted after processing", input_file_path);
+    Ok(format!("/{}/{}", RESOURCE_BUCKET_NAME, msg.object_name))
 }
 
 /// Downloads a file from a presigned URL and saves it to a temporary location
@@ -592,7 +596,7 @@ async fn upload_file(client: &S3Client, object_name: &str, workdir: &str, path: 
 
    
     let multi_part_upload = client.create_multipart_upload()
-        .bucket("resource") 
+        .bucket(RESOURCE_BUCKET_NAME) 
         .key(object_name.clone())
         .send()
         .await
@@ -643,7 +647,7 @@ async fn upload_file(client: &S3Client, object_name: &str, workdir: &str, path: 
         .build();
 
     client.complete_multipart_upload()
-        .bucket("resource")
+        .bucket(RESOURCE_BUCKET_NAME)
         .key(&object_name)
         .multipart_upload(completed_multipart_upload)
         .upload_id(upload_id)
@@ -664,7 +668,7 @@ async fn upload_chunk(
 ) {
     let bytes = ByteStream::from(buffer);
     let part: aws_sdk_s3::operation::upload_part::UploadPartOutput = client.upload_part()
-        .bucket("resource") 
+        .bucket(RESOURCE_BUCKET_NAME) 
         .key(object_name)
         .part_number(part_number)
         .upload_id(upload_id)
@@ -677,6 +681,45 @@ async fn upload_chunk(
         .part_number(part_number)
         .e_tag(part.e_tag().unwrap_or("not set").to_string())
         .build());
+}
+
+async fn queue_resource_processing_completed_event(object_name: &str, storage_path: &str) {
+    let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
+    let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
+
+    let json_msg = serde_json::json!({
+        "object_name": object_name,
+        "status": "processed",
+        "storage_path": storage_path,
+    }).to_string(); 
+
+    tracing::info!("Sending resource processing completed message {} to SQS queue: {}", json_msg, queue_url);
+
+    sqs_client.send_message()
+        .queue_url(queue_url)
+        .message_body(json_msg)
+        .send()
+        .await
+        .expect("Failed to send resource status update message to SQS");
+}
+
+async fn queue_resource_status_update_event(object_name: &str, status: &str) {
+    let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
+    let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
+
+    let json_msg = serde_json::json!({
+        "object_name": object_name,
+        "status": "failed",
+    }).to_string(); 
+
+    tracing::info!("Sending resource status update message {} to SQS queue: {}", json_msg, queue_url);
+
+    sqs_client.send_message()
+        .queue_url(queue_url)
+        .message_body(json_msg)
+        .send()
+        .await
+        .expect("Failed to send resource status update message to SQS");
 }
 
 async fn delete_message(client: &Client, queue_url: &str, receipt_handle: &str) -> Result<(), aws_sdk_sqs::Error> {

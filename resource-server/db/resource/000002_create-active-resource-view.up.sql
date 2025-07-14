@@ -1,6 +1,6 @@
 CREATE VIEW active_resources AS
 SELECT 
-    id 
+    id, 
     user_id,
     is_public,
     resource_name,

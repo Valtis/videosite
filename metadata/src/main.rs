@@ -53,6 +53,21 @@ enum FileType {
     Other,
 }
 
+impl FileType {
+    fn as_str(&self) -> &str {
+        match self {
+            FileType::Video { .. } => "video",
+            FileType::Audio { .. } => "audio",
+            FileType::Image { .. } => "image",
+            FileType::Other => "other",
+        }
+    }
+
+    fn is_media_type(&self) -> bool {
+        matches!(self, FileType::Video { .. } | FileType::Audio { .. } | FileType::Image { .. })
+    }
+}
+
 
 #[derive(Debug, serde::Deserialize)]
 struct MediaInfo {
@@ -149,11 +164,13 @@ async fn main() {
                     FileType::Other // Default to Other if there's an error
                 });
 
-            if let FileType::Other = file_type {
-                tracing::warn!("File {} is not a recognized media type, skipping further processing.", scan_event.message.object_name);
-            } else {
+            if file_type.is_media_type() {
                 tracing::info!("File {} is a recognized media type ({:?})", scan_event.message.object_name, file_type);
-                queue_metadata_extraction_completed_event(scan_event.message.presigned_url, scan_event.message.object_name, file_type).await;
+                queue_metadata_extraction_completed_event(&scan_event.message.presigned_url, &scan_event.message.object_name, &file_type).await;
+                queue_resource_type_update_event(&scan_event.message.object_name, file_type.as_str()).await
+            } else {
+                tracing::warn!("File {} is not a recognized media type, skipping further processing.", scan_event.message.object_name);
+                queue_resource_status_update_event(&scan_event.message.object_name, "failed").await;
             }
 
 
@@ -376,7 +393,7 @@ fn extract_image_information(image_track: &Track) -> FileType {
     }
 }
 
-async fn queue_metadata_extraction_completed_event(presigned_uri: String, object_name: String, file_type: FileType) {
+async fn queue_metadata_extraction_completed_event(presigned_uri: &str, object_name: &str, file_type: &FileType) {
     let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
 
     let json_msg = serde_json::json!({
@@ -405,6 +422,44 @@ async fn queue_metadata_extraction_completed_event(presigned_uri: String, object
         .expect("Failed to send message to SQS");
 }
 
+async fn queue_resource_status_update_event(object_name: &str, status: &str) {
+    let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
+    let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
+
+    let json_msg = serde_json::json!({
+        "object_name": object_name,
+        "status": status,
+    }).to_string(); 
+
+    tracing::info!("Sending resource status update message {} to SQS queue: {}", json_msg, queue_url);
+
+    sqs_client.send_message()
+        .queue_url(queue_url)
+        .message_body(json_msg)
+        .send()
+        .await
+        .expect("Failed to send resource status update message to SQS");
+}
+
+async fn queue_resource_type_update_event(object_name: &str, resource_type: &str) {
+    let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
+    let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
+
+    let json_msg = serde_json::json!({
+        "object_name": object_name,
+        "status": "type_resolved",
+        "resource_type": resource_type,
+    }).to_string(); 
+
+    tracing::info!("Sending resource type update message {} to SQS queue: {}", json_msg, queue_url);
+
+    sqs_client.send_message()
+        .queue_url(queue_url)
+        .message_body(json_msg)
+        .send()
+        .await
+        .expect("Failed to send resource type update message to SQS");
+}
 
 async fn delete_message(client: &Client, queue_url: &str, receipt_handle: &str) -> Result<(), aws_sdk_sqs::Error> {
     client

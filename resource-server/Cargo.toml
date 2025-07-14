@@ -9,6 +9,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 axum = "0.8.4"
 axum-extra = { version = "0.10.1", features = ["cookie"]}
+tower = "0.5.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 josekit = "0.10.3"
@@ -20,3 +21,4 @@ aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1.96.0"
 aws-sdk-sqs = "1.74.0"
 chrono = "0.4.41"
+auth-check = { path = "../libs/auth-check" }

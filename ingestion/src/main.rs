@@ -3,7 +3,7 @@ use std::env;
 use axum::{
     extract::{
         DefaultBodyLimit, Multipart
-    }, http::StatusCode, middleware::from_fn, response::IntoResponse, routing::{get, post}, Extension, Router
+    }, http::StatusCode, middleware::from_fn, response::Redirect, routing::{get, post}, Extension, Router
 };
 
 use uuid;
@@ -22,7 +22,7 @@ use tracing_subscriber::filter;
 const UPLOAD_BUCKET: &str = "upload"; 
 
 #[axum::debug_handler]
-async fn upload_handler(user_info: Extension<UserInfo>, mut multipart: Multipart) -> impl IntoResponse {
+async fn upload_handler(user_info: Extension<UserInfo>, mut multipart: Multipart) -> Redirect {
 
 
     while let Some(field) = multipart.next_field().await.unwrap() {
@@ -31,7 +31,7 @@ async fn upload_handler(user_info: Extension<UserInfo>, mut multipart: Multipart
         queue_upload_event(&user_info, presigned_uri, &object_name, &file_name, file_size).await;
     }
 
-    return(StatusCode::OK, "upload handler reached").into_response();
+    Redirect::to("/index.html")
 }
 
 async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String, String, String, usize) {
