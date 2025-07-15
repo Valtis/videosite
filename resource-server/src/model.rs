@@ -3,6 +3,41 @@ use crate::db;
 use serde::{Deserialize, Serialize};
 
 
+pub struct ResourceStatusUpdateEvent {
+    pub message: ResourceStatusUpdateMessage,
+    pub receipt_handle: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "status")]
+pub enum ResourceStatusUpdateMessage {
+    #[serde(rename = "uploaded")]
+    ResourceUploaded {
+        user_id: String,
+        object_name: String,
+        file_name: String,
+    },
+    #[serde(rename = "failed")]
+    ResourceProcessingFailed {
+        object_name: String,
+    },
+    #[serde(rename = "processing")]
+    ResourceProcessingStarted {
+        object_name: String,
+    },
+    #[serde(rename = "type_resolved")]
+    ResourceTypeResolved {
+        object_name: String,
+        resource_type: String,
+    },
+    #[serde(rename = "processed")]
+    ResourceProcessed {
+        object_name: String,
+    },
+}
+
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
     pub id: String,
@@ -24,4 +59,11 @@ impl From<db::Resource> for Resource {
             created_at: resource.created_at.to_rfc3339(),
         }
     }
+}
+
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourcePublicStatusUpdate {
+    pub is_public: bool,
 }

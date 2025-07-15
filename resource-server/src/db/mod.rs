@@ -7,7 +7,7 @@ use schema::*;
 
 
 // provided by the active resources view, which filters out deleted resources
-#[derive(Queryable, Selectable)]
+#[derive(Debug, Queryable, Selectable)]
 #[diesel(table_name = active_resources)]
 pub struct Resource {
     pub id: Uuid,
@@ -16,8 +16,6 @@ pub struct Resource {
     pub resource_name: String,
     pub resource_type: String,
     pub resource_status: String,
-    pub origin_file_path: Option<String>,
-    pub base_directory: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -32,35 +30,12 @@ pub struct NewResource {
     pub resource_name: String,
     pub resource_type: String,
     pub resource_status: String,
-    pub origin_file_path: String,
-}
-
-#[derive(Insertable)]
-#[diesel(table_name = app_resource)]
-pub struct ResourceStatusUpdate {
-    id: Uuid,
-    resource_status: String,
-}
-
-#[derive(Insertable)]
-#[diesel(table_name = app_resource)]
-pub struct ResourceTypeUpdate {
-    id: Uuid,
-    resource_type: String,
-}
-
-#[derive(Insertable)]
-#[diesel(table_name = app_resource)]
-pub struct ResourceStoragePathUpdate {
-    id: Uuid,
-    base_directory: String,
 }
 
 pub fn create_resource(
     resource_uuid: String,
     user_id: String,
-    resource_name: String,
-    origin_file_path: String,
+    resource_name: String
 ) {
 
     let mut conn = get_connection();
@@ -72,7 +47,6 @@ pub fn create_resource(
         resource_name,
         resource_type: "unknown".to_string(), // resource type, can be set later
         resource_status: "pending".to_string(), // resource status, can be set later
-        origin_file_path,
     };
 
     diesel::insert_into(app_resource::table)
@@ -109,18 +83,19 @@ pub fn update_resource_type(
         .expect("Error updating resource type");
 }
 
-pub fn update_resource_storage(
-    resource_uuid: String,
-    base_directory: String,
+pub fn update_resource_public_status(
+    resource_uuid: &str,
+    user_id: &str,
+    is_public: bool,
 ) {
     let mut conn = get_connection();
 
     let resource_id = Uuid::parse_str(&resource_uuid).unwrap();
 
     diesel::update(app_resource::table.filter(app_resource::id.eq(resource_id)))
-        .set(app_resource::base_directory.eq(base_directory))
+        .set(app_resource::is_public.eq(is_public))
         .execute(&mut conn)
-        .expect("Error updating resource storage path");
+        .expect("Error updating resource public status");
 }
 
 pub fn get_active_resources_by_user_id(user_id: &str) -> Vec<Resource> {
@@ -128,8 +103,18 @@ pub fn get_active_resources_by_user_id(user_id: &str) -> Vec<Resource> {
 
     active_resources::table
         .filter(active_resources::user_id.eq(Uuid::parse_str(user_id).unwrap()))
+        .order(active_resources::created_at.desc())
         .load::<Resource>(&mut conn)
         .expect("Error loading active resources")
+}
+
+pub fn get_active_resource_by_id(resource_id: &str) -> Option<Resource> {
+    let mut conn = get_connection();
+
+    active_resources::table
+        .filter(active_resources::id.eq(Uuid::parse_str(resource_id).unwrap()))
+        .first::<Resource>(&mut conn)
+        .ok()
 }
 
 

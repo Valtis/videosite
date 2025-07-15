@@ -45,15 +45,56 @@ async function load_resources() {
         const createdP = document.createElement("p");
         createdP.textContent = `Created at: ${new Date(resource.created_at).toLocaleString()}`;
 
+        const publicP = document.createElement("p");
+        const isPublicCheckbox = document.createElement("input");
+        isPublicCheckbox.type = "checkbox";
+        isPublicCheckbox.checked = resource.is_public;
+        publicP.textContent = "Public: ";
+        publicP.appendChild(isPublicCheckbox);
+        
+        isPublicCheckbox.addEventListener("change", () => {
+            update_public_status(resource.id, isPublicCheckbox.checked);
+        });
+
+
+
         // Append elements to resourceDiv
         resourceDiv.appendChild(h2);
         resourceDiv.appendChild(typeP);
         resourceDiv.appendChild(statusP);
         resourceDiv.appendChild(createdP);
+        resourceDiv.appendChild(publicP);
+
+        if (resource.resource_type === "video" && resource.resource_status === "processed") {
+            // link to player page
+            const playerLink = document.createElement("a");
+            playerLink.href = `player.html?resource_id=${resource.id}`;
+            playerLink.textContent = "Watch Video";
+            resourceDiv.appendChild(playerLink);
+        }
+
         resourcesList.appendChild(resourceDiv);
     });
+}
 
+async function update_public_status(id, is_public) {
+    try {
+        let response = await fetch(`/resource/${id}/public`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ is_public })
+        });
 
+        if (!response.ok) {
+            throw new Error(`Failed to update public status: ${response.statusText}`);
+        }
 
-    // create a grid for resources ()
+        let result = await response.json();
+        console.log("Public status updated:", result);
+    } catch (error) {
+        console.error('Error updating public status:', error);
+    }
 }

@@ -3,64 +3,35 @@ mod model;
 
 use std::env;
 
-use aws_sdk_s3::Client as S3Client;
+use aws_sdk_s3::{error::SdkError, Client as S3Client};
+use aws_sdk_s3::error::DisplayErrorContext;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_sqs::Client;
 
 use tracing_subscriber::filter;
 use serde_json;
+use tokio_util::io::ReaderStream;
 use tower::ServiceBuilder;
 
 
 use axum::{
-    extract::{Extension, Json},
-    http::StatusCode,
-    middleware::from_fn,
-    response::IntoResponse,
-    routing::{get},
-    Router,
+    body::{Bytes, Body}, 
+    extract::{Extension, Json, Path}, 
+    http::{response, StatusCode},
+    middleware::from_fn, 
+    response::{IntoResponse},
+    routing::{get, post}, 
+    Router
 };
 
+use http_body_util::StreamBody;
 
 use db::*;
+use model::*;
 
-use auth_check::{auth_middleware, UserInfo};
+use auth_check::{auth_middleware, add_user_info_to_request, UserInfo};
 
-struct ResourceStatusUpdateEvent {
-    pub message: ResourceStatusUpdateMessage,
-    pub receipt_handle: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(tag = "status")]
-enum ResourceStatusUpdateMessage {
-    #[serde(rename = "uploaded")]
-    ResourceUploaded {
-        user_id: String,
-        object_name: String,
-        file_name: String,
-        origin_file_path: String,
-    },
-    #[serde(rename = "failed")]
-    ResourceProcessingFailed {
-        object_name: String,
-    },
-    #[serde(rename = "processing")]
-    ResourceProcessingStarted {
-        object_name: String,
-    },
-    #[serde(rename = "type_resolved")]
-    ResourceTypeResolved {
-        object_name: String,
-        resource_type: String,
-    },
-    #[serde(rename = "processed")]
-    ResourceProcessed {
-        object_name: String,
-        storage_path: String,
-    },
-}
-
+const RESOURCE_BUCKET: &'static str = "resource";
 
 /// List resources of the current user.
 /// 
@@ -81,6 +52,49 @@ async fn list_resources(user_info: Extension<UserInfo>) -> impl IntoResponse{
     (StatusCode::OK, Json(resources))
 }
 
+/// Get the master playlist for a video resource.
+/// 
+/// 
+#[axum::debug_handler]
+async fn get_video_master_playlist(
+    user_info: Extension<Option<UserInfo>>,
+    params: axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let resource_id = params.0;
+    send_resource(user_info.0, resource_id, "master.m3u8".to_string(), "video").await
+}
+
+#[axum::debug_handler]
+async fn get_stream_asset(
+    user_info: Extension<Option<UserInfo>>,
+    params: axum::extract::Path<(String, String, String)>,
+) -> impl IntoResponse {
+    let resource_id = params.0.0;
+    let index = params.0.1;
+    let file_name = params.0.2;
+
+    let file_in_directory = format!("stream_{}/{}", index, file_name);
+    send_resource(user_info.0, resource_id, file_in_directory, &"video", ).await
+}
+
+#[axum::debug_handler]
+async fn update_resource_public_status(
+    user_info: Extension<UserInfo>,
+    params: axum::extract::Path<String>,
+    Json(update): Json<ResourcePublicStatusUpdate>,
+) -> impl IntoResponse {
+    let resource_id = params.0;
+    let resource = db::get_active_resource_by_id(&resource_id);
+
+    if let Some(resource) = resource {
+        if resource.user_id.to_string() == user_info.user_id {
+            db::update_resource_public_status(&resource_id, &user_info.user_id, update.is_public);
+            return StatusCode::OK
+        }
+    }
+
+    return StatusCode::NOT_FOUND;
+}
 
 async fn resource_status_listener() {
     let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
@@ -98,12 +112,11 @@ async fn resource_status_listener() {
 
 
             match resource_status_update.message {
-                ResourceStatusUpdateMessage::ResourceUploaded { user_id, object_name, file_name, origin_file_path } => {
+                ResourceStatusUpdateMessage::ResourceUploaded { user_id, object_name, file_name} => {
                     create_resource(
                         object_name,
                         user_id, 
                         file_name,
-                        origin_file_path,
                     );
                 },
                 ResourceStatusUpdateMessage::ResourceProcessingFailed { object_name } => {
@@ -115,9 +128,8 @@ async fn resource_status_listener() {
                 ResourceStatusUpdateMessage::ResourceTypeResolved { object_name, resource_type } => {
                     update_resource_type(object_name, resource_type);
                 },
-                ResourceStatusUpdateMessage::ResourceProcessed { object_name, storage_path } => {
+                ResourceStatusUpdateMessage::ResourceProcessed { object_name} => {
                     update_resource_status(object_name.clone(), "processed".to_string());
-                    update_resource_storage(object_name, storage_path);
                 },
             };        
 
@@ -196,11 +208,27 @@ async fn main() {
 
     let app = Router::new()
         .route("/resource/health", get(|| async { "OK" }))
-        .route("/resource/list", get(list_resources))
+        .nest(
+            "/resource",
+            Router::new()
+                .route("/list", get(list_resources))
+                .route("/{resource_id}/public", post(update_resource_public_status))
             .layer(
                 ServiceBuilder::new()
                     .layer(from_fn(auth_middleware))
-            );
+            )
+        )
+        .nest(
+            "/resource/{resource_id}",
+            Router::new()
+                .route("/master.m3u8", get(get_video_master_playlist))
+                .route("/stream_{index}/{file_in_directory}", get(get_stream_asset))
+                .layer(
+                ServiceBuilder::new()
+                    .layer(from_fn(add_user_info_to_request))
+            )
+        )
+        ;
         
         
 
@@ -213,4 +241,101 @@ async fn main() {
         resource_status_listener_task,
         axum::serve(listener, app)
     ).1.unwrap();
+}
+
+
+async fn send_resource(
+    user_info: Option<UserInfo>,
+    resource_id: String, 
+    file_in_directory: String,
+    resource_type: &str,
+) -> impl IntoResponse {
+    tracing::info!("Sending resource {} for user {:?}", resource_id, user_info);
+    let resource = db::get_active_resource_by_id(&resource_id);
+    if let Some(resource) = resource {
+        if resource.resource_type == resource_type && has_access_to_resource(&user_info, &resource) {
+
+            let object_name = format!("{}/{}", resource.id, file_in_directory);
+            let s3_client = get_s3_client().await;
+          
+
+            match get_object_stream(
+                s3_client,
+                RESOURCE_BUCKET,
+                &object_name,
+            ).await {
+                Ok(stream) => {
+                    tracing::info!("Successfully retrieved object stream for {}", object_name);
+                    let reader_stream = ReaderStream::new(stream.into_async_read());
+                    return (StatusCode::OK, Body::from_stream(StreamBody::new(reader_stream))).into_response();
+                },
+                Err(err) => {
+                    tracing::error!("Failed to get object stream: {}", err);
+                    // most likely cause is that the object does not exist
+                    return StatusCode::NOT_FOUND.into_response();
+                }
+            }
+
+        } else {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    }
+
+    StatusCode::NOT_FOUND.into_response()
+}
+
+fn has_access_to_resource(user_info: &Option<UserInfo>, resource: &db::Resource) -> bool {
+    if resource.is_public {
+        tracing::info!("Resource {} is public, access granted", resource.id);
+        return true;
+    }
+
+    if let Some(user_info) = user_info {
+        tracing::info!("Checking access for user {} to resource {}", user_info.user_id, resource.id);
+        return user_info.user_id == resource.user_id.to_string();
+    }
+
+    false
+}
+
+async fn get_s3_client() -> S3Client {
+    let config = aws_config::load_from_env().await;
+    let client = S3Client::new(&config);
+
+    let client = if let Ok(var) = env::var("USE_PATH_STYLE_BUCKETS") {
+        if var.to_lowercase() == "true" {
+            tracing::info!("Using path-style buckets");
+            let config_builder = client.config().clone().to_builder();
+            S3Client::from_conf(config_builder.force_path_style(true).build())
+        } else {
+            client
+        }
+    } else {
+        client
+    };
+
+    client
+}
+
+
+async fn get_object_stream(
+    s3_client: S3Client,
+    bucket: &str,
+    object_name: &str,
+) -> Result<ByteStream, DisplayErrorContext<impl std::error::Error>> {
+    tracing::info!("Getting object stream for bucket: {}, object: {}", bucket, object_name);
+    let get_object_output = match s3_client
+        .get_object()
+        .bucket(bucket)
+        .key(object_name)
+        .send()
+        .await {
+            Ok(output) => output,
+            Err(err) => {
+                let error_with_context = DisplayErrorContext(err);
+                return Err(error_with_context);
+            }
+        };
+
+    Ok(get_object_output.body)
 }

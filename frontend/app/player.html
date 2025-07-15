@@ -5,83 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My Web Page</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="/static/js/player.js"></script>
+    <link rel="stylesheet" href="/static/css/player.css">
     <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.15.5/shaka-player.ui.js"></script>
     <link rel="stylesheet" href="https://ajax.googleapis.com/ajax/libs/shaka-player/4.15.5/controls.css">      
 </head>
-<body>
+<body onload="initPlayer()">
     <div id="videoContainer" style="width: 1280px; height: 720px; position: relative;">
         <video data-shaka-player id="video" width="1280" autoplay></video>
     </div>
-    <script>
-      "use strict";
-      // Install built-in polyfills to patch browser incompatibilities.
-      shaka.polyfill.installAll();
-
-      // Check if the browser supports the necessary APIs.
-      if (shaka.Player.isBrowserSupported()) {
-        // Everything looks good!
-        initPlayer();
-      } else {
-        console.error('Browser not supported!');
-      }
-
-      async function initPlayer() {
-        // Get the video element
-        const video = document.getElementById('video');
-        const videoContainer = document.getElementById('videoContainer');
-
-        // Create a Player instance first
-        const player = new shaka.Player();
-        player.attach(video);
-        // Listen for error events.
-        // Load an HLS manifest
-        const hlsUrl = 'http://localhost:8000/master.m3u8'; // Example HLS URL
-
-
-
-        // Create the UI overlay with the player instance
-        const ui = new shaka.ui.Overlay(player, videoContainer, video);
-
-        const config = {
-          'controlPanelElements': [
-            'play_pause',
-            'mute',
-            'volume',
-            'time_and_duration',
-            'spacer',
-            'fullscreen',
-            'overflow_menu',
-          ],
-          'overflowMenuButtons': [
-            'airplay',
-            'cast',
-            'quality',
-          ],
-          'addSeekBar': true
-        };
-        await ui.configure(config);
-        
-        await player.load(hlsUrl).then(function () {
-          console.log('The video has now been loaded!');
-        }).catch(function(error) {
-          onError(error);
-        });
-
-
-        // Attach player to the window to make it easy to access in the JS console.
-        window.player = player;
-      }
-
-      // Add a simple error handler for Shaka Player
-      function onError(error) {
-        console.error('Error code', error.code, 'object', error);
-      }
-    </script>
-    <style>
-        .shaka-controls-button-panel {
-            display: flex;
-            flex-direction: row;
-            width: 100%;
-        }
-    </style>
 </body>

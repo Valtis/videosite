@@ -29,24 +29,8 @@ pub struct UserInfo {
 // the authentication to the authorization service
 
 pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, StatusCode> {
-    // check if we have an authorization header with a valid token
-    let mut token = None;
-    if let Some(auth_header) = req.headers().get("Authorization") {
-        if let Ok(auth_value) = auth_header.to_str() {
-            if auth_value.starts_with("Bearer ") {
-                token = Some(auth_value.trim_start_matches("Bearer ").to_string());
-            }    
-        } 
-    }
 
-    if token.is_none() {
-        let cookie_jar = CookieJar::from_headers(req.headers());
-        // check if we have a session cookie
-        if let Some(cookie) = cookie_jar.get("session") {
-            token = Some(cookie.value().to_string());
-        }
-    }
-
+    let token = get_token(&req);
 
     if let Some(token) = token {
         let res =  is_authenticated(&token).await;
@@ -79,8 +63,71 @@ pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, S
 }
 
 
+/// Adds UserInfo to the request extensions if the user is authenticated,
+///
+/// This function will not enforce authentication, it is used merely to enable further checks in the request handlers.
+/// (E.g. if user has access to a resource)
+/// 
+/// # Arguments
+/// * `req` - The request to which the UserInfo will be added if the user is authenticated.
+///
+pub async fn add_user_info_to_request(
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+
+    let token = get_token(&req);
+
+    if let Some(token) = token {
+        let res =  is_authenticated(&token).await;
+        match res {
+            Ok(true) => {
+                let claims = token.split('.').nth(1).unwrap();
+                // append the padding, as the base64 decoder requires it
+                let padded_claims = if claims.len() % 4 == 0 {
+                    claims.to_string()
+                } else {
+                    format!("{}{}", claims, "=".repeat(4 - claims.len() % 4))
+                };
+                let decoded_vec = base64::decode(padded_claims).unwrap();
+                let decoded = String::from_utf8(decoded_vec).unwrap();
+                let user_info = serde_json::from_str(&decoded).unwrap();
+
+                req.extensions_mut().insert::<Option<UserInfo>>(Some(user_info));
+            }
+            Ok(false) => {
+                req.extensions_mut().insert::<Option<UserInfo>>(None);
+            }
+            Err(_) => {
+                req.extensions_mut().insert::<Option<UserInfo>>(None);
+            },
+        }
+    } else {
+        req.extensions_mut().insert::<Option<UserInfo>>(None);
+    }
+
+    return Ok(next.run(req).await);
+}
 
 
+fn get_token(req: &Request) -> Option<String> {
+    // check if we have an authorization header with a valid token
+    if let Some(auth_header) = req.headers().get("Authorization") {
+        if let Ok(auth_value) = auth_header.to_str() {
+            if auth_value.starts_with("Bearer ") {
+                return Some(auth_value.trim_start_matches("Bearer ").to_string());
+            }    
+        } 
+    }
+
+  
+    let cookie_jar = CookieJar::from_headers(req.headers());
+    // check if we have a session cookie
+    if let Some(cookie) = cookie_jar.get("session") {
+        return Some(cookie.value().to_string());
+    }
+    None
+}
 
 async fn is_authenticated(token: &str) -> Result<bool, reqwest::Error> {
     

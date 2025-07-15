@@ -8,8 +8,6 @@ diesel::table! {
         resource_name -> Varchar,
         resource_type -> Varchar,
         resource_status -> Varchar,
-        origin_file_path -> Nullable<Varchar>,
-        base_directory -> Nullable<Varchar>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         deleted_at -> Nullable<Timestamptz>,
@@ -25,8 +23,6 @@ diesel::table! {
         resource_name -> Varchar,
         resource_type -> Varchar,
         resource_status -> Varchar,
-        origin_file_path -> Nullable<Varchar>,
-        base_directory -> Nullable<Varchar>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
     }    

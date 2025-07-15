@@ -216,7 +216,6 @@ async fn transcode_video(
     let input_file_path = download_input_file(&msg.presigned_url, &msg.object_name, &workdir).await;
 
     let ffmpeg_str = construct_video_transcoding_options_for_ffmpeg(
-        &msg.object_name,
         video,
         audio,
         &input_file_path);
@@ -291,7 +290,6 @@ async fn download_input_file(presigned_url: &str, object_name: &str, workdir: &s
 /// A string containing the ffmpeg command line options for transcoding the video
 /// 
 fn construct_video_transcoding_options_for_ffmpeg(
-    object_name: &str,
     video_stats: &VideoData,
     audio_stats: &Option<AudioData>,
     input_file: &str,
@@ -412,10 +410,9 @@ fn construct_video_transcoding_options_for_ffmpeg(
 
     ffmpeg_args += &format!(
         " -f hls -hls_playlist_type vod -hls_flags independent_segments -hls_segment_type mpegts \
-         -hls_segment_filename \"stream_{object_name}_%v/data%04d.ts\" \
+         -hls_segment_filename \"stream_%v/data%04d.ts\" \
          -master_pl_name master.m3u8 -var_stream_map \"{stream_map_str}\" \
-         stream_{object_name}_%v/playlist.m3u8",
-        object_name=object_name,
+         stream_%v/playlist.m3u8",
         stream_map_str=stream_map_str
     );
 
@@ -690,7 +687,6 @@ async fn queue_resource_processing_completed_event(object_name: &str, storage_pa
     let json_msg = serde_json::json!({
         "object_name": object_name,
         "status": "processed",
-        "storage_path": storage_path,
     }).to_string(); 
 
     tracing::info!("Sending resource processing completed message {} to SQS queue: {}", json_msg, queue_url);

@@ -1,0 +1,5 @@
+.shaka-controls-button-panel {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+}

@@ -6,8 +6,6 @@ SELECT
     resource_name,
     resource_type,
     resource_status,
-    origin_file_path,
-    base_directory,
     created_at,
     updated_at
 FROM app_resource
