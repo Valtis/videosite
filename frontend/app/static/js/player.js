@@ -1,40 +1,44 @@
 "use strict";
 
-async function initPlayer() {
 
-    // Install built-in polyfills to patch browser incompatibilities.
-    shaka.polyfill.installAll();
-
-    // Check if the browser supports the necessary APIs.
-    if (!shaka.Player.isBrowserSupported()) {
-        console.error('Browser not supported!');
-        return;
-    }
-
-    // Get the video element
-    const video = document.getElementById('video');
-    const videoContainer = document.getElementById('videoContainer');
-
-    // Create a Player instance first
-    const player = new shaka.Player();
-    player.attach(video);
-    // Listen for error events.
-    // Load an HLS manifest
-
-    // get resource_id from query parameters
-    const urlParams = new URLSearchParams(window.location.search);
-    const resourceId = urlParams.get('resource_id');
+// For player.html, can be ignored if initPlayer is used elsewhere
+function onLoadPlayer() {
+    const resourceId = new URLSearchParams(window.location.search).get('resource_id');
     if (!resourceId) {
         console.error("Resource ID not provided in the URL.");
         return;
     }
 
-    const hlsUrl = `/resource/${resourceId}/master.m3u8`; // Example HLS URL
+    const video = document.getElementById('video');
+    const videoContainer = document.getElementById('videoContainer');
+    
+    initPlayer(videoContainer, video, resourceId).then(() => {
+        console.log('Player initialized successfully.');
+    }).catch(error => {
+        console.error('Error initializing player:', error);
+    });
+}
 
+async function initPlayer(videoContainer, videoElement, resourceId) {
 
+    shaka.polyfill.installAll();
 
-    // Create the UI overlay with the player instance
-    const ui = new shaka.ui.Overlay(player, videoContainer, video);
+    if (!shaka.Player.isBrowserSupported()) {
+        console.error('Browser not supported!');
+        return;
+    }
+
+    if (!videoElement || !(videoElement instanceof HTMLVideoElement)) {
+        console.error(`Element with ID ${videoElement.id} is not a valid video element.`);
+        return;
+    }
+
+    const player = new shaka.Player();
+    player.attach(videoElement);
+
+    const hlsUrl = `/resource/${resourceId}/master.m3u8`;
+
+    const ui = new shaka.ui.Overlay(player, videoContainer, videoElement);
 
     const config = {
         'controlPanelElements': [
@@ -50,6 +54,7 @@ async function initPlayer() {
         'airplay',
         'cast',
         'quality',
+        'playback_rate',
         ],
         'addSeekBar': true
     };
@@ -62,11 +67,9 @@ async function initPlayer() {
     });
 
 
-    // Attach player to the window to make it easy to access in the JS console.
     window.player = player;
 }
 
-    // Add a simple error handler for Shaka Player
 function onError(error) {
     console.error('Error code', error.code, 'object', error);
 }

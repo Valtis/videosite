@@ -21,6 +21,7 @@ use axum::{
 
 use axum_extra::extract::cookie::CookieJar;
 
+use josekit::JoseError;
 use josekit::{jws::{JwsHeader, HS256}, jwt::{self, JwtPayload}, Value};
 
 use scrypt::{
@@ -45,6 +46,11 @@ struct LoginRequest {
     password: String,
 }
 
+#[derive(Serialize)]
+struct UserInfo {
+    display_name: String,
+    email: String,
+}
 
 #[derive(Deserialize)]
 struct TokenVerificationRequest {
@@ -227,16 +233,12 @@ fn generate_jwt(user: User) -> String {
 /// * If the environment variables `SIGNING_KEY`, `ISSUER`, or `AUDIENCE` are not set.
 /// * If the JWT decoding fails.
 fn verify_token(token: &str) -> bool {
-    let secret_key = env::var("SIGNING_KEY").expect("SIGNING_KEY environment variable not set");
     let issuer = env::var("ISSUER").expect("ISSUER environment variable not set");
     let audience = env::var("AUDIENCE").expect("AUDIENCE environment variable");
     let now = SystemTime::now();
 
-    let verifier = HS256.verifier_from_bytes(secret_key.as_bytes())
-        .expect("Failed to create verifier from secret key");
 
-
-    if let Ok((payload, _)) = jwt::decode_with_verifier(token, &verifier) {
+    if let Ok((payload, _)) = get_payload(token) {
 
         if payload.expires_at().is_none() || payload.expires_at().unwrap() <= now {
             tracing::debug!("Token verification failed: Token has expired");
@@ -275,6 +277,39 @@ fn verify_token(token: &str) -> bool {
     }
 }
 
+fn get_payload(token: &str) -> Result<(JwtPayload, JwsHeader), JoseError> {
+    let secret_key = env::var("SIGNING_KEY").expect("SIGNING_KEY environment variable not set");
+    let verifier = HS256.verifier_from_bytes(secret_key.as_bytes())
+        .expect("Failed to create verifier from secret key");
+
+    jwt::decode_with_verifier(&token, &verifier)
+}
+
+async fn user_info(cookie_jar: CookieJar) -> impl IntoResponse {
+    let token = match cookie_jar.get("session") {
+        Some(cookie) => cookie.value().to_string(),
+        None => { 
+            tracing::debug!("No session cookie found");
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    };
+
+    if verify_token(&token) {
+        let payload = get_payload(&token).expect("Failed to get payload from token").0;
+
+        return Json(
+            UserInfo { 
+                display_name: payload.claim("display_name").unwrap().as_str().unwrap().to_string(),
+                email: payload.claim("email").unwrap().as_str().unwrap().to_string(),
+
+            }).into_response();
+   }
+
+    StatusCode::UNAUTHORIZED.into_response()
+}
+
+
+
 /// Checks if the provided password matches the hashed password.
 /// 
 /// # Arguments
@@ -294,6 +329,7 @@ fn password_equals(hash: &str, password: &str) -> bool {
 
 
 
+
 #[tokio::main]
 async fn main() {
 
@@ -310,6 +346,7 @@ async fn main() {
         .route("/auth/status", get(verify_jwt_via_cookie))
         .route("/auth/verify", post(verify_jwt))
         .route("/auth/login", post(login_handler))
+        .route("/auth/info", get(user_info))
         ;
         
 

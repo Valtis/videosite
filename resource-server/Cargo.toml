@@ -14,10 +14,8 @@ axum-extra = { version = "0.10.1", features = ["cookie"]}
 tower = "0.5.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-josekit = "0.10.3"
 diesel = { version = "2.2.11", features = ["postgres", "uuid", "chrono"] }
 uuid =  { version = "1.17.0", features = ["serde", "v4"] }
-scrypt = "0.11.0"
 pq-sys = { version = "0.7.2", features = ["bundled" ] }
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
 aws-sdk-s3 = { version = "1.96.0", features = ["rt-tokio"] }

@@ -5,17 +5,42 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>My Application</title>
         <link rel="stylesheet" href="/static/css/styles.css">
+        <link rel="stylesheet" href="/static/css/player.css">
         <script src="/static/js/app.js" defer></script>
+        <script src="/static/js/player.js" defer></script>
+        
+        <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.15.5/shaka-player.ui.js"></script>
+        <link rel="stylesheet" href="https://ajax.googleapis.com/ajax/libs/shaka-player/4.15.5/controls.css">      
     </head>
-    <body onload="loadResourcesPoll()">
-        <div>
-            <form id="upload" enctype="multipart/form-data" method="post" action="/upload/file">
-                <input type="file" name="file" id="file" required>
-                <button type="submit">Upload</button>
-        </div>        
+    <body onload="onLoad()">
+        <div id="topbar" class="topbar-container">
+            <div class="topbar-left-container">
+                <div>
+                     <form id="upload" enctype="multipart/form-data" method="post" action="/upload/file">
+                        <input type="file" name="file" id="file" required>
+                        <button type="submit">Upload</button>
+                    </form>
+                </div>   
+            </div>
+            <div class="topbar-right-container">
+                <div class="tooltip">
+                    <div id="quota" class="topbar-item"></div>
+                    <span id="quota-tooltip" class="tooltiptext"></span>
+                </div>
+                <div id="user" class="topbar-item">
+                    <span id="username-display"></span>
+                </div>
+            </div>
+        </div>
+        <div id="banner-div">
+            <div id="quota-exceeded-banner" class="hidden warning-banner">
+                <p>Storage quota exceeded</p>
+            </div>
+        </div>
+     
         <div id="resource-grid">
             <h1>Resources</h1>
-            <div id="resources-container" class="resources-container">
+            <div id="resource-container" class="resource-container">
             </div>
         </div>
 

@@ -28,6 +28,9 @@ case "$1" in
     # Drop the database for the resource project
     ./resource-server/db/drop_database.sh
     ;;
+  ingestion)
+    ./ingestion/db/drop_database.sh
+    ;;
   *)
     echo "Unknown project: $1"
     exit 1

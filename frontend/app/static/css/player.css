@@ -3,3 +3,23 @@
     flex-direction: row;
     width: 100%;
 }
+
+
+.video-container {
+    width: 1280px;
+    max-width: 100%;
+    position: relative;
+}
+
+.video-element {
+    width: 100%;
+    display: block;
+    object-fit: contain;
+}
+
+.shaka-fullscreen-container,
+.shaka-fullscreen-container video {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+}

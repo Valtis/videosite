@@ -28,7 +28,9 @@ case "$1" in
     # Rollback migrations for the resource project
     ./resource-server/db/rollback_migration.sh
     ;;
-
+  ingestion)
+    ./ingestion/db/rollback_migration.sh
+    ;;
   *)
     echo "Unknown project: $1"
     exit 1

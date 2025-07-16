@@ -1,9 +1,12 @@
+mod db;
+mod models;
+
 use std::env;
 
 use axum::{
     extract::{
         DefaultBodyLimit, Multipart
-    }, http::StatusCode, middleware::from_fn, response::Redirect, routing::{get, post}, Extension, Router
+    }, http::StatusCode, middleware::from_fn, response::{IntoResponse, Redirect}, routing::{get, post}, Extension, Router
 };
 
 use uuid;
@@ -19,19 +22,142 @@ use auth_check::{auth_middleware, UserInfo};
 
 use tracing_subscriber::filter;
 
+use db::*;
+
 const UPLOAD_BUCKET: &str = "upload"; 
 
 #[axum::debug_handler]
 async fn upload_handler(user_info: Extension<UserInfo>, mut multipart: Multipart) -> Redirect {
 
+    let user_total_quota = db::user_quota(&user_info.user_id);
+    let mut used_quota = used_quota(&user_info.user_id);
 
     while let Some(field) = multipart.next_field().await.unwrap() {
+
         let (presigned_uri, object_name, file_name, file_size) = upload_file(field).await;
+
+        used_quota += file_size as i64;
+        if used_quota > user_total_quota {
+            tracing::error!("User {} has exceeded their upload quota. Used: {}, Total: {}", user_info.user_id, used_quota, user_total_quota);
+            // since we cannot get the size before storing the file, we need to delete the file from S3
+            delete_file(&object_name).await;
+            tracing::error!("File {} deleted from S3 due to quota exceeded", object_name);
+            return Redirect::to("/index.html?error=quota_exceeded");
+        }
+
+        db::insert_new_upload(
+            &user_info.user_id,
+            &object_name,
+            file_size as i64,
+        );
+
+
         tracing::info!("File uploaded successfully, presigned URL: {}", presigned_uri);
         queue_upload_event(&user_info, presigned_uri, &object_name, &file_name, file_size).await;
     }
 
     Redirect::to("/index.html")
+}
+
+#[axum::debug_handler]
+async fn user_quota(user_info: Extension<UserInfo>) -> impl IntoResponse {
+     let total_quota = db::user_quota(&user_info.user_id);
+    let used_quota = used_quota(&user_info.user_id);
+
+    let response = models::UserQuota {
+        used_quota,
+        total_quota,
+    };
+
+    (StatusCode::OK, axum::Json(response))
+
+}
+
+
+async fn queue_upload_event(user_info: &UserInfo, presigned_uri: String, object_name: &str, file_name: &str, file_size: usize) {
+    let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
+    let upload_queue_url = env::var("UPLOAD_QUEUE_URL").expect("UPLOAD_QUEUE_URL not set");
+    let resource_status_queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
+
+
+    let upload_json_msg = serde_json::json!({
+        "presigned_url": presigned_uri,
+        "file_size": file_size,
+        "object_name": object_name,
+    }).to_string(); 
+
+    let resource_status_json_msg = serde_json::json!({
+        "user_id": user_info.user_id,
+        "object_name": object_name,
+        "file_name": file_name,
+        "status": "uploaded",
+        "origin_file_path": format!("/{}/{}", UPLOAD_BUCKET, object_name),
+    }).to_string();
+
+    tracing::info!("Sending message {} to SQS queue: {}", upload_json_msg, upload_queue_url);
+
+    sqs_client.send_message()
+        .queue_url(upload_queue_url)
+        .message_body(upload_json_msg)
+        .send()
+        .await
+        .expect("Failed to send upload message to SQS");
+
+    tracing::info!("Sending resource status message {} to SQS queue: {}", resource_status_json_msg, resource_status_queue_url);
+    sqs_client.send_message()
+        .queue_url(resource_status_queue_url)
+        .message_body(resource_status_json_msg)
+        .send()
+        .await
+        .expect("Failed to send resource status message to SQS");
+
+
+}
+
+#[tokio::main]
+async fn main() {
+
+    tracing_subscriber::fmt()
+        .with_file(true)
+        .with_line_number(true)
+        .with_level(true)
+        .pretty()
+        .with_max_level(filter::LevelFilter::INFO)
+        .init();
+
+    let app = Router::new()
+        .route("/upload/health", get(|| async { "ok" }))
+        .nest(
+            "/upload",
+            Router::new()
+            .route("/file", post(upload_handler))
+            .layer(
+                ServiceBuilder::new()
+                    .layer(DefaultBodyLimit::max(4096*1024*1024)) // 4gb limit
+                    .layer(from_fn(auth_middleware))
+            )
+        )
+        .nest(
+            "/upload",
+            Router::new()
+            .route("/quota", get(user_quota))
+            .layer(
+                ServiceBuilder::new()
+                    .layer(from_fn(auth_middleware))
+            )
+        );
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await
+        .expect("failed to bind tcp listener");
+
+    axum::serve(listener, app)
+        .await
+        .expect("failed to start server");
+}
+
+fn used_quota(user_id: &str) -> i64 {
+    let user_uploads = get_user_uploads(user_id);
+    user_uploads.iter().map(|upload| upload.file_size).sum()
 }
 
 async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String, String, String, usize) {
@@ -43,20 +169,8 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String,
     tracing::info!("Received field: name={}, content_type={:?}, filename={:?}", name, content_type, filename);
     
 
-    let config = aws_config::load_from_env().await;
-    let client = s3::Client::new(&config);
-
-    let client = if let Ok(var) = env::var("USE_PATH_STYLE_BUCKETS") {
-        if var.to_lowercase() == "true" {
-            tracing::info!("Using path-style buckets");
-            let config_builder = client.config().clone().to_builder();
-            s3::Client::from_conf(config_builder.force_path_style(true).build())
-        } else {
-            client
-        }
-    } else {
-        client
-    };
+    let client = get_s3_client().await;
+    
 
     let object_name = uuid::Uuid::new_v4().to_string();
     tracing::info!("Uploading file to S3 with object name: {}", object_name);
@@ -148,70 +262,29 @@ async fn upload_chunk(
         .build());
 }
 
-async fn queue_upload_event(user_info: &UserInfo, presigned_uri: String, object_name: &str, file_name: &str, file_size: usize) {
-    let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
-    let upload_queue_url = env::var("UPLOAD_QUEUE_URL").expect("UPLOAD_QUEUE_URL not set");
-    let resource_status_queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
+async fn get_s3_client() -> s3::Client {
+let config = aws_config::load_from_env().await;
+    let client = s3::Client::new(&config);
 
-
-    let upload_json_msg = serde_json::json!({
-        "presigned_url": presigned_uri,
-        "file_size": file_size,
-        "object_name": object_name,
-    }).to_string(); 
-
-    let resource_status_json_msg = serde_json::json!({
-        "user_id": user_info.user_id,
-        "object_name": object_name,
-        "file_name": file_name,
-        "status": "uploaded",
-        "origin_file_path": format!("/{}/{}", UPLOAD_BUCKET, object_name),
-    }).to_string();
-
-    tracing::info!("Sending message {} to SQS queue: {}", upload_json_msg, upload_queue_url);
-
-    sqs_client.send_message()
-        .queue_url(upload_queue_url)
-        .message_body(upload_json_msg)
-        .send()
-        .await
-        .expect("Failed to send upload message to SQS");
-
-    tracing::info!("Sending resource status message {} to SQS queue: {}", resource_status_json_msg, resource_status_queue_url);
-    sqs_client.send_message()
-        .queue_url(resource_status_queue_url)
-        .message_body(resource_status_json_msg)
-        .send()
-        .await
-        .expect("Failed to send resource status message to SQS");
-
-
+    if let Ok(var) = env::var("USE_PATH_STYLE_BUCKETS") {
+        if var.to_lowercase() == "true" {
+            tracing::info!("Using path-style buckets");
+            let config_builder = client.config().clone().to_builder();
+            s3::Client::from_conf(config_builder.force_path_style(true).build())
+        } else {
+            client
+        }
+    } else {
+        client
+    }
 }
 
-#[tokio::main]
-async fn main() {
-
-    tracing_subscriber::fmt()
-        .with_file(true)
-        .with_line_number(true)
-        .with_level(true)
-        .pretty()
-        .with_max_level(filter::LevelFilter::INFO)
-        .init();
-
-    let app = Router::new()
-        .route("/upload/health", get(|| async { "ok" }))
-        .route("/upload/file", post(upload_handler))
-            .layer(
-                ServiceBuilder::new()
-                    .layer(DefaultBodyLimit::max(4096*1024*1024)) // 4gb limit
-                    .layer(from_fn(auth_middleware))
-            );
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await
-        .expect("failed to bind tcp listener");
-
-    axum::serve(listener, app)
+async fn delete_file(object_name: &str) {
+    let client = get_s3_client().await;
+    client.delete_object()
+        .bucket(UPLOAD_BUCKET)
+        .key(object_name)
+        .send()
         .await
-        .expect("failed to start server");
+        .expect("Failed to delete file from S3");
 }
