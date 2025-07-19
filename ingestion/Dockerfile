@@ -8,6 +8,7 @@ RUN apk add --no-cache \
     libpq-dev
 
 COPY libs/auth-check /app/libs/auth-check
+COPY libs/audit /app/libs/audit
 
 COPY ingestion/Cargo.toml /app/ingestion/Cargo.toml
 COPY ingestion/Cargo.lock /app/ingestion/Cargo.lock

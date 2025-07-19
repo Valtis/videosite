@@ -7,6 +7,8 @@ use schema::*;
 
 #[derive(Debug, Queryable, Selectable)]
 #[diesel(table_name = active_uploads)]
+
+#[allow(dead_code)]
 pub struct UserUpload {
     pub user_id: Uuid,
     pub resource_id: Uuid,
@@ -17,6 +19,8 @@ pub struct UserUpload {
 
 #[derive(Debug, Insertable)]
 #[diesel(table_name = user_uploads)]
+
+#[allow(dead_code)]
 pub struct NewUserUpload {
     pub user_id: Uuid,
     pub resource_id: Uuid,

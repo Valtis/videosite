@@ -2,6 +2,11 @@
 
 set -ue
 
+# The other services switch over to a non-root user immediately, but
+# we need to do some setup at first, which requires root privileges.
+# Thus, the docker file will not switch to the non-root user and we will
+# handle this manually at the end of this script.
+
 echo "Updating ClamAV configuration..."
 # Ensure the config line is not commented out, and update the value
 sed -i "s/^.*#.*StreamMaxLength.*/StreamMaxLength ${SCAN_MAX_SIZE_MEGABYTES}M/" /etc/clamav/clamd.conf

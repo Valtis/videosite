@@ -53,11 +53,12 @@ services:
       - USE_PATH_STYLE_BUCKETS=true
       - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-finished-queue
       - RESOURCE_STATUS_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/resource-status-queue
+      - AUDIT_EVENT_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/audit-event-queue
     restart: unless-stopped
   virus-scan:
     build: 
-      context: virus-scan
-      dockerfile: Dockerfile
+      context: . 
+      dockerfile: virus-scan/Dockerfile
     environment:
       - AWS_ENDPOINT_URL=http://localstack:4566
       - AWS_REGION=us-east-1
@@ -66,6 +67,7 @@ services:
       - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-finished-queue
       - VIRUS_SCAN_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/virus-scan-clear-queue
       - RESOURCE_STATUS_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/resource-status-queue
+      - AUDIT_EVENT_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/audit-event-queue
       - SCAN_MAX_SIZE_MEGABYTES=200
     depends_on:
       - localstack

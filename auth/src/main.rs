@@ -134,8 +134,6 @@ async fn verify_jwt(headers: HeaderMap,  payload: Json<TokenVerificationRequest>
         .and_then(|value| value.to_str().ok())
         .unwrap_or("unknown");
 
-    tracing::info!("Verifying token for client IP: {}", client_ip);
-
     if verify_token(&payload.token, &client_ip.to_string()).await {
         StatusCode::OK
     } else {

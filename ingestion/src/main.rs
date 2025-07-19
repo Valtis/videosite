@@ -9,6 +9,8 @@ use axum::{
     }, http::StatusCode, middleware::from_fn, response::{IntoResponse, Redirect}, routing::{get, post}, Extension, Router
 };
 
+use axum_client_ip::{ClientIpSource, ClientIp};
+
 use uuid;
 
 use aws_sdk_s3 as s3;
@@ -19,6 +21,7 @@ use s3::types::CompletedMultipartUpload;
 use tower::ServiceBuilder;
 
 use auth_check::{auth_middleware, UserInfo};
+use audit::{send_audit_event, AuditEvent};
 
 use tracing_subscriber::filter;
 
@@ -26,8 +29,10 @@ use db::*;
 
 const UPLOAD_BUCKET: &str = "upload"; 
 
+
+
 #[axum::debug_handler]
-async fn upload_handler(user_info: Extension<UserInfo>, mut multipart: Multipart) -> Redirect {
+async fn upload_handler(ClientIp(client_ip): ClientIp, user_info: Extension<UserInfo>, mut multipart: Multipart) -> Redirect {
 
     let user_total_quota = db::user_quota(&user_info.user_id);
     let mut used_quota = used_quota(&user_info.user_id);
@@ -42,6 +47,21 @@ async fn upload_handler(user_info: Extension<UserInfo>, mut multipart: Multipart
             // since we cannot get the size before storing the file, we need to delete the file from S3
             delete_file(&object_name).await;
             tracing::error!("File {} deleted from S3 due to quota exceeded", object_name);
+
+            send_audit_event(AuditEvent {
+                event_type: "file_upload".to_string(),
+                user_id: Some(&user_info.user_id),
+                client_ip: &client_ip.to_string(),
+                target: Some(&object_name),
+                event_details: Some(serde_json::json!({
+                    "file_name": file_name,
+                    "file_size": file_size,
+                    "error": "quota_exceeded"
+                })),
+            }).await.unwrap_or_else(|e| {
+                tracing::error!("Failed to send audit event: {}", e);
+            });
+
             return Redirect::to("/index.html?error=quota_exceeded");
         }
 
@@ -50,10 +70,21 @@ async fn upload_handler(user_info: Extension<UserInfo>, mut multipart: Multipart
             &object_name,
             file_size as i64,
         );
-
-
         tracing::info!("File uploaded successfully, presigned URL: {}", presigned_uri);
         queue_upload_event(&user_info, presigned_uri, &object_name, &file_name, file_size).await;
+
+        send_audit_event(AuditEvent {
+            event_type: "file_upload".to_string(),
+            user_id: Some(&user_info.user_id),
+            client_ip: &client_ip.to_string(),
+            target: Some(&object_name),
+            event_details: Some(serde_json::json!({
+                "file_name": file_name,
+                "file_size": file_size,
+            })),
+        }).await.unwrap_or_else(|e| {
+            tracing::error!("Failed to send audit event: {}", e);
+        });
     }
 
     Redirect::to("/index.html")
@@ -125,6 +156,16 @@ async fn main() {
         .with_max_level(filter::LevelFilter::INFO)
         .init();
 
+    let ip_source_env = env::var("IP_SOURCE").unwrap_or_else(|_| "nginx".to_string());
+    let ip_source = match ip_source_env.as_str() {
+        "nginx" => ClientIpSource::RightmostXForwardedFor,
+        "amazon" => ClientIpSource::CloudFrontViewerAddress,
+        _ => { 
+            tracing::warn!("Unknown IP source: {}, defaulting to Nginx", ip_source_env);
+            ClientIpSource::RightmostXForwardedFor
+        } 
+    };
+
     let app = Router::new()
         .route("/upload/health", get(|| async { "ok" }))
         .nest(
@@ -145,7 +186,8 @@ async fn main() {
                 ServiceBuilder::new()
                     .layer(from_fn(auth_middleware))
             )
-        );
+        )
+        .layer(ip_source.into_extension());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await
         .expect("failed to bind tcp listener");

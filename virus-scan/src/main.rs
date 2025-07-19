@@ -8,6 +8,8 @@ use reqwest;
 use serde_json;
 use futures_util::stream::StreamExt;
 
+use audit::{send_audit_event, AuditEvent};
+
 
 #[derive(Debug, serde::Deserialize)]
 struct UploadMessage {
@@ -53,9 +55,22 @@ async fn main() {
             if upload_event.message.file_size < max_size {
 
                 tracing::info!("Scanning file: {}", upload_event.message.object_name);
-                if let Ok(_) = scan_file(&upload_event.message.presigned_url).await {
+                if let Ok(_) = scan_file(&upload_event.message.presigned_url, &upload_event.message.object_name).await {
                     tracing::debug!("File scan completed successfully, no viruses found.");
                     scan_success = true;
+                    
+                    send_audit_event(AuditEvent {
+                        event_type: "virus_scan".to_string(),
+                        user_id: None,
+                        client_ip: &"N/A (internal service)",
+                        target: Some(&upload_event.message.object_name),
+                        event_details: Some(serde_json::json!({
+                            "status": "clean"
+                        })),
+                    }).await.unwrap_or_else(|err| {
+                        tracing::error!("Failed to send audit event: {}", err);
+                    });
+
                 } else {
                     tracing::warn!("File scan failed or file is infected with a virus.");
                 }
@@ -66,6 +81,21 @@ async fn main() {
                     max_size
                 );
                 scan_success = true; // Treat as clean if we skip the scan
+
+                send_audit_event(AuditEvent {
+                    event_type: "virus_scan".to_string(),
+                    user_id: None,
+                    client_ip: &"N/A (internal service)",
+                    target: Some(&upload_event.message.object_name),
+                    event_details: Some(serde_json::json!({
+                        "status": "skipped",
+                        "reason": "file size exceeds maximum allowed size",
+                        "file_size": upload_event.message.file_size,
+                        "max_size": max_size,
+                    })),
+                }).await.unwrap_or_else(|err| {
+                    tracing::error!("Failed to send audit event: {}", err);
+                });
             }
 
             if scan_success {
@@ -136,7 +166,7 @@ async fn receive_upload_notification(client: &Client, queue_url: &str) -> Result
 /// # Returns
 /// * `Result<bool, Box<dyn std::error::Error>>` - If file is fine, returns `Ok(true)`, 
 ///
-async fn scan_file(presigned_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn scan_file(presigned_url: &str, object_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     
     let http_client = reqwest::Client::new(); 
     let clamd_tcp = clamav_client::tokio::Tcp{ host_address: "localhost:3310" };
@@ -166,7 +196,7 @@ async fn scan_file(presigned_url: &str) -> Result<(), Box<dyn std::error::Error>
             tracing::error!("Virus scan failed: {}", err);
             Box::new(err) as Box<dyn std::error::Error>
         })?;
-    
+
     let is_file_clean = clamav_client::clean(&scan_response)
         .map_err(|err| {
             tracing::error!("Failed to parse scan result: {}", err);
@@ -177,6 +207,22 @@ async fn scan_file(presigned_url: &str) -> Result<(), Box<dyn std::error::Error>
         tracing::info!("File is clean, no viruses found.");
     } else {
         tracing::warn!("File is infected with a virus!");
+
+        send_audit_event(AuditEvent {
+            event_type: "virus_scan".to_string(),
+            user_id: None,
+            client_ip: &"N/A (internal service)",
+            target: Some(object_name),
+            event_details: Some(serde_json::json!({
+                "status": "infected",
+                // in practice this SHOULD be an ASCII so no need to worry about encoding issues,
+                // but just in case of wonkiness we do a lossy conversion
+                "scan_response": String::from_utf8_lossy(&scan_response).to_string(),
+            })),
+        }).await.unwrap_or_else(|err| {
+            tracing::error!("Failed to send audit event: {}", err);
+        });
+
         return Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::Other,
             "File is infected with a virus",

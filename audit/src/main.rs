@@ -31,7 +31,6 @@ async fn main() {
 
         if let Some(audit_event) = audit_event_opt {
 
-            tracing::info!("Received audit event: {:?}", audit_event);
             db::insert_audit_event(
                 audit_event.message.user_id.as_deref(),
                 &audit_event.message.client_ip,
