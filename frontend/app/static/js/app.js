@@ -210,7 +210,7 @@ async function initQuota() {
         let tooltip = `${used_quota.toFixed(2)} ${units[used_quota_index]} / ${total_quota.toFixed(2)} ${units[total_quota_index]}`;
         document.getElementById('quota-tooltip').innerText = tooltip;
 
-        let used_quota_ratio = Math.round(total_quota > 0 ? (used_quota / total_quota) * 100 : 0);
+        let used_quota_ratio = Math.round(total_quota > 0 ? (quotaData.used_quota / quotaData.total_quota) * 100 : 0);
 
         const quota_circle_radius_pixels = 40;
 

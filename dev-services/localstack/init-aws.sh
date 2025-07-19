@@ -9,3 +9,4 @@ awslocal sqs create-queue --queue-name video-processing-queue
 awslocal sqs create-queue --queue-name audio-processing-queue
 awslocal sqs create-queue --queue-name image-processing-queue
 awslocal sqs create-queue --queue-name resource-status-queue
+awslocal sqs create-queue --queue-name audit-event-queue

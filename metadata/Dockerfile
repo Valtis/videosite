@@ -29,7 +29,6 @@ COPY ./src /app/src
 
 WORKDIR /app
 
-RUN ls /app/target/x86_64-unknown-linux-musl/release -la
 RUN touch /app/src/main.rs && cargo build --release --target x86_64-unknown-linux-musl
 
 

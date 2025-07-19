@@ -21,6 +21,8 @@ use axum::{
 
 use axum_extra::extract::cookie::CookieJar;
 
+use axum_client_ip::{ClientIp, ClientIpSource};
+
 use josekit::JoseError;
 use josekit::{jws::{JwsHeader, HS256}, jwt::{self, JwtPayload}, Value};
 
@@ -37,6 +39,8 @@ use serde::{Deserialize, Serialize, ser::SerializeStruct };
 
 use db::{User, get_user_by_email};
 
+
+use audit::{send_audit_event, AuditEvent};
 
 
 
@@ -87,11 +91,12 @@ impl Serialize for LoginResponse {
 ///  This is used by the frontend to check if the user is logged in.
 /// 
 /// # Arguments
+/// * `ClientIp(client_ip)`: The client IP address extracted from the request.
 /// * `cookie_jar`: The cookie jar containing the cookies sent by the client.
 ////// # Returns
 /// * `StatusCode::OK` if the token is valid.
 /// * `StatusCode::UNAUTHORIZED` if the token is missing or invalid.
-async fn verify_jwt_via_cookie(cookie_jar: CookieJar) -> StatusCode {
+async fn verify_jwt_via_cookie(ClientIp(client_ip): ClientIp, cookie_jar: CookieJar) -> StatusCode {
     let token = match cookie_jar.get("session") {
         Some(cookie) => cookie.value().to_string(),
         None => { 
@@ -100,7 +105,7 @@ async fn verify_jwt_via_cookie(cookie_jar: CookieJar) -> StatusCode {
         }
     };
 
-    if verify_token(&token) {
+    if verify_token(&token, &client_ip.to_string()).await {
         tracing::debug!("Token verification successful");
         StatusCode::OK
     } else {
@@ -114,13 +119,24 @@ async fn verify_jwt_via_cookie(cookie_jar: CookieJar) -> StatusCode {
 /// This is used by the sibling services to verify the user is who they claim to be.
 /// 
 /// # Arguments
+/// * `headers`: The request headers containing the client IP address.
 /// * `payload`: The request body containing the token to verify.
 /// # Returns
 /// * `StatusCode::OK` if the token is valid.
 /// * `StatusCode::UNAUTHORIZED` if the token is invalid.car
 ///  
-async fn verify_jwt(payload: Json<TokenVerificationRequest>) -> StatusCode {
-    if verify_token(&payload.token) {
+async fn verify_jwt(headers: HeaderMap,  payload: Json<TokenVerificationRequest>) -> StatusCode {
+
+    // this endpoint is not coming directly from the client, so Nginx stock headers are not useful
+    // and we do not use the extractor. The auth check lib instead will set X-Client-IP header,
+    // and we use that to verify the token.
+    let client_ip = headers.get("X-Client-IP")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown");
+
+    tracing::info!("Verifying token for client IP: {}", client_ip);
+
+    if verify_token(&payload.token, &client_ip.to_string()).await {
         StatusCode::OK
     } else {
         StatusCode::UNAUTHORIZED
@@ -137,7 +153,7 @@ async fn verify_jwt(payload: Json<TokenVerificationRequest>) -> StatusCode {
 /// * `StatusCode::OK` with a JSON response containing the result of the login attempt
 /// * `StatusCode::UNAUTHORIZED` if the credentials are invalid.
 /// 
-async fn login_handler(Json(payload): Json<LoginRequest>) -> impl IntoResponse {
+async fn login_handler(ClientIp(client_ip): ClientIp,Json(payload): Json<LoginRequest>) -> impl IntoResponse {
 
     // TODO: Fetch user from database and validate credentials
     // for now, hardcoded test user
@@ -147,15 +163,30 @@ async fn login_handler(Json(payload): Json<LoginRequest>) -> impl IntoResponse {
     let mut headers = HeaderMap::new();
     
     let cookie;
+    let user_id;
     if let Some(user) = user_opt {
         if password_equals(&user.password_hash, &payload.password) {
             tracing::debug!("User {} logged in successfully", user.id);
+            user_id = user.id.to_string();
             cookie = format!("session={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200", generate_jwt(user));
         } else {
             tracing::debug!("Invalid password for user: {}", user.id);
             let json = Json(LoginResponse {
                 res: Err("Invalid username or password".to_string()),
             });
+            send_audit_event(
+                AuditEvent {
+                    event_type: "login_failure".to_string(),
+                    user_id: None,
+                    client_ip: &client_ip.to_string(),
+                    target: None,
+                    event_details: Some(serde_json::json!({
+                        "username": payload.username,
+                        "reason": "Invalid password"
+                    })),
+                }
+            ).await.unwrap();
+
             return (StatusCode::OK, headers, json).into_response();
         } 
        
@@ -165,6 +196,19 @@ async fn login_handler(Json(payload): Json<LoginRequest>) -> impl IntoResponse {
         let json = Json(LoginResponse {
             res: Err("Invalid username or password".to_string()),
         });
+
+        send_audit_event(
+            AuditEvent {
+                event_type: "login_failure".to_string(),
+                user_id: None, 
+                client_ip: &client_ip.to_string(),
+                target: None,
+                event_details: Some(serde_json::json!({
+                    "username": payload.username,
+                    "reason": "User not found"
+                })),
+            }
+        ).await.unwrap();
         return (StatusCode::OK, headers, json).into_response();
     }
 
@@ -178,6 +222,15 @@ async fn login_handler(Json(payload): Json<LoginRequest>) -> impl IntoResponse {
         res: Ok("Success".to_string()),
     });
 
+    send_audit_event(
+        AuditEvent {
+            event_type: "login_success".to_string(),
+            user_id: Some(&user_id),
+            client_ip: &client_ip.to_string(),
+            target: None,
+            event_details: None,
+        }
+    ).await.unwrap();
     (StatusCode::OK, headers, json).into_response()
 }
 
@@ -232,7 +285,7 @@ fn generate_jwt(user: User) -> String {
 /// # Panics
 /// * If the environment variables `SIGNING_KEY`, `ISSUER`, or `AUDIENCE` are not set.
 /// * If the JWT decoding fails.
-fn verify_token(token: &str) -> bool {
+async fn verify_token(token: &str, client_ip: &str) -> bool {
     let issuer = env::var("ISSUER").expect("ISSUER environment variable not set");
     let audience = env::var("AUDIENCE").expect("AUDIENCE environment variable");
     let now = SystemTime::now();
@@ -270,9 +323,59 @@ fn verify_token(token: &str) -> bool {
             return false;
         }
 
+        tracing::debug!("Token verification successful for user: {}", payload.subject().unwrap());
         return true;
     } else {
-        tracing::debug!("Token verification failed: Invalid token");
+        // signature verification failed, worth logging the event.
+        tracing::warn!("Token verification failed: Invalid token");
+        // manually extract the subject, keeping in mind that the token might not be a valid JWT
+        let user_id = match token.split(".").nth(1) {
+            Some(payload) => {
+                
+                let config = base64::engine::general_purpose::GeneralPurposeConfig::new()
+                    .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
+
+                let alphabet = base64::alphabet::STANDARD;
+                let engine = base64::engine::GeneralPurpose::new(&alphabet, config);
+
+                let decoded_str=base64::Engine::decode(
+                    &engine,
+                    payload.as_bytes()
+                ).ok();
+                if let Some(decoded_str) = decoded_str {
+                    let json_str = String::from_utf8_lossy(&decoded_str).to_string();
+                    let json_value_opt = serde_json::from_str::<serde_json::Value>(&json_str).ok();
+                    if let Some(json_value) = json_value_opt {
+                        if let Some(user_id) = json_value.get("sub") {
+                            let user_id_str = user_id.as_str().unwrap_or("<unknown>");
+                            // check if the user_id is a valid UUID
+                            uuid::Uuid::parse_str(user_id_str).ok().map(|uuid| uuid.to_string());
+
+                            Some(user_id_str.to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+
+                } else {
+                    None
+                }
+            },
+            None => {
+                None
+            }
+        };
+
+        send_audit_event(AuditEvent {
+            event_type: "token_verification_failure".to_string(),
+            user_id: user_id.as_deref(),
+            client_ip: &client_ip.to_string(), // No client IP available for token verification failure
+            target: None,
+            event_details: None,
+        }).await.unwrap();
+
         false
     }
 }
@@ -285,7 +388,7 @@ fn get_payload(token: &str) -> Result<(JwtPayload, JwsHeader), JoseError> {
     jwt::decode_with_verifier(&token, &verifier)
 }
 
-async fn user_info(cookie_jar: CookieJar) -> impl IntoResponse {
+async fn user_info(ClientIp(client_ip): ClientIp, cookie_jar: CookieJar) -> impl IntoResponse {
     let token = match cookie_jar.get("session") {
         Some(cookie) => cookie.value().to_string(),
         None => { 
@@ -294,7 +397,7 @@ async fn user_info(cookie_jar: CookieJar) -> impl IntoResponse {
         }
     };
 
-    if verify_token(&token) {
+    if verify_token(&token, client_ip.to_string().as_str()).await {
         let payload = get_payload(&token).expect("Failed to get payload from token").0;
 
         return Json(
@@ -338,8 +441,18 @@ async fn main() {
         .with_line_number(true)
         .with_level(true)
         .pretty()
-        .with_max_level(filter::LevelFilter::DEBUG)
+        .with_max_level(filter::LevelFilter::INFO)
         .init();
+
+    let ip_source_env = env::var("IP_SOURCE").unwrap_or_else(|_| "nginx".to_string());
+    let ip_source = match ip_source_env.as_str() {
+        "nginx" => ClientIpSource::RightmostXForwardedFor,
+        "amazon" => ClientIpSource::CloudFrontViewerAddress,
+        _ => { 
+            tracing::warn!("Unknown IP source: {}, defaulting to Nginx", ip_source_env);
+            ClientIpSource::RightmostXForwardedFor
+        } 
+    };
 
     let app = Router::new()
         .route("/auth/health", get(|| async { "OK" }))
@@ -347,7 +460,8 @@ async fn main() {
         .route("/auth/verify", post(verify_jwt))
         .route("/auth/login", post(login_handler))
         .route("/auth/info", get(user_info))
-        ;
+        .layer(ip_source.into_extension());
+        
         
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await

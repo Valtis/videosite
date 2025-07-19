@@ -31,6 +31,9 @@ case "$1" in
   ingestion)
     ./ingestion/db/rollback_migration.sh
     ;;
+  audit)
+    ./audit/db/rollback_migration.sh
+    ;;
   *)
     echo "Unknown project: $1"
     exit 1

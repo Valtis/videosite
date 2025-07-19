@@ -3,7 +3,7 @@ mod model;
 
 use std::env;
 
-use aws_sdk_s3::{error::SdkError, Client as S3Client};
+use aws_sdk_s3::{Client as S3Client};
 use aws_sdk_s3::error::DisplayErrorContext;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_sqs::Client;
@@ -15,14 +15,16 @@ use tower::ServiceBuilder;
 
 
 use axum::{
-    body::{Bytes, Body}, 
-    extract::{Extension, Json, Path}, 
-    http::{response, StatusCode},
+    body::{Body}, 
+    extract::{Extension, Json}, 
+    http::{StatusCode},
     middleware::from_fn, 
     response::{IntoResponse},
     routing::{get, post}, 
     Router
 };
+
+use axum_client_ip::{ ClientIp, ClientIpSource };
 
 use http_body_util::StreamBody;
 
@@ -30,6 +32,7 @@ use db::*;
 use model::*;
 
 use auth_check::{auth_middleware, add_user_info_to_request, UserInfo};
+use audit::{AuditEvent, send_audit_event};
 
 const RESOURCE_BUCKET: &'static str = "resource";
 
@@ -81,6 +84,7 @@ async fn get_stream_asset(
 async fn update_resource_public_status(
     user_info: Extension<UserInfo>,
     params: axum::extract::Path<String>,
+    ClientIp(client_ip): ClientIp,
     Json(update): Json<ResourcePublicStatusUpdate>,
 ) -> impl IntoResponse {
     let resource_id = params.0;
@@ -88,7 +92,20 @@ async fn update_resource_public_status(
 
     if let Some(resource) = resource {
         if resource.user_id.to_string() == user_info.user_id {
-            db::update_resource_public_status(&resource_id, &user_info.user_id, update.is_public);
+            db::update_resource_public_status(&resource_id, update.is_public);
+
+            send_audit_event(AuditEvent {
+                event_type: "resource_public_status_updated".to_string(),
+                user_id: Some(&user_info.user_id),
+                client_ip: &client_ip.to_string(),
+                target: Some(&resource_id),
+                event_details: Some(serde_json::json!({
+                    "is_public": update.is_public,
+                })),
+            }).await.unwrap_or_else(|err| {
+                tracing::error!("Failed to send audit event: {}", err);
+            });
+
             return StatusCode::OK
         }
     }
@@ -200,6 +217,16 @@ async fn delete_message(client: &Client, queue_url: &str, receipt_handle: &str) 
 #[tokio::main]
 async fn main() {
 
+    let ip_source_env = env::var("IP_SOURCE").unwrap_or_else(|_| "nginx".to_string());
+    let ip_source = match ip_source_env.as_str() {
+        "nginx" => ClientIpSource::RightmostXForwardedFor,
+        "amazon" => ClientIpSource::CloudFrontViewerAddress,
+        _ => { 
+            tracing::warn!("Unknown IP source: {}, defaulting to Nginx", ip_source_env);
+            ClientIpSource::RightmostXForwardedFor
+        } 
+    };
+
     tracing_subscriber::fmt()
         .with_level(true)
         .pretty()
@@ -227,8 +254,7 @@ async fn main() {
                 ServiceBuilder::new()
                     .layer(from_fn(add_user_info_to_request))
             )
-        )
-        ;
+        ).layer(ip_source.into_extension());
         
         
 
@@ -239,7 +265,9 @@ async fn main() {
 
     tokio::join!(
         resource_status_listener_task,
-        axum::serve(listener, app)
+        axum::serve(
+            listener, 
+            app)
     ).1.unwrap();
 }
 
@@ -255,6 +283,12 @@ async fn send_resource(
     if let Some(resource) = resource {
         if resource.resource_type == resource_type && has_access_to_resource(&user_info, &resource) {
 
+            if transfer_quota_exceeded() {
+                tracing::warn!("Transfer quota exceeded for user {}", user_info.as_ref().map_or("unknown", |u| &u.user_id));
+                // Hey, bandwidth is expensive. 
+                return StatusCode::PAYMENT_REQUIRED.into_response();
+            }
+
             let object_name = format!("{}/{}", resource.id, file_in_directory);
             let s3_client = get_s3_client().await;
           
@@ -264,8 +298,11 @@ async fn send_resource(
                 RESOURCE_BUCKET,
                 &object_name,
             ).await {
-                Ok(stream) => {
-                    tracing::info!("Successfully retrieved object stream for {}", object_name);
+                Ok((stream, file_size)) => {
+                    update_quota_used(file_size as i64).unwrap_or_else(|err| {
+                        tracing::error!("Failed to update transfer quota: {}", err);
+                    });
+                    
                     let reader_stream = ReaderStream::new(stream.into_async_read());
                     return (StatusCode::OK, Body::from_stream(StreamBody::new(reader_stream))).into_response();
                 },
@@ -284,14 +321,38 @@ async fn send_resource(
     StatusCode::NOT_FOUND.into_response()
 }
 
+fn transfer_quota_exceeded() -> bool {
+    if let Ok(var) = env::var("ENABLE_DATA_QUOTAS") {
+        if var.to_lowercase() == "true" {
+            let daily_quota_mb: i64 = env::var("DAILY_DATA_QUOTA_MEGABYTES")
+                .unwrap_or_else(|_| "1024".to_string())
+                .parse()
+                .unwrap_or(1024);
+
+            let daily_quota_bytes = daily_quota_mb * 1024 * 1024;
+
+            let used_quota = db::get_used_daily_quota().unwrap_or(0);
+            return used_quota > daily_quota_bytes;
+        }
+    }
+    false
+}
+
+fn update_quota_used(amount: i64) -> Result<(), String> {
+    if transfer_quota_exceeded() {
+        return Err("Transfer quota exceeded".to_string());
+    }
+
+    db::update_daily_quota(amount)
+        .map_err(|err| format!("Failed to update transfer quota: {}", err))
+}
+
 fn has_access_to_resource(user_info: &Option<UserInfo>, resource: &db::Resource) -> bool {
     if resource.is_public {
-        tracing::info!("Resource {} is public, access granted", resource.id);
         return true;
     }
 
     if let Some(user_info) = user_info {
-        tracing::info!("Checking access for user {} to resource {}", user_info.user_id, resource.id);
         return user_info.user_id == resource.user_id.to_string();
     }
 
@@ -304,7 +365,6 @@ async fn get_s3_client() -> S3Client {
 
     let client = if let Ok(var) = env::var("USE_PATH_STYLE_BUCKETS") {
         if var.to_lowercase() == "true" {
-            tracing::info!("Using path-style buckets");
             let config_builder = client.config().clone().to_builder();
             S3Client::from_conf(config_builder.force_path_style(true).build())
         } else {
@@ -322,7 +382,7 @@ async fn get_object_stream(
     s3_client: S3Client,
     bucket: &str,
     object_name: &str,
-) -> Result<ByteStream, DisplayErrorContext<impl std::error::Error>> {
+) -> Result<(ByteStream, i64), DisplayErrorContext<impl std::error::Error>> {
     tracing::info!("Getting object stream for bucket: {}, object: {}", bucket, object_name);
     let get_object_output = match s3_client
         .get_object()
@@ -337,5 +397,9 @@ async fn get_object_stream(
             }
         };
 
-    Ok(get_object_output.body)
+    if get_object_output.content_length.is_none() {
+        tracing::warn!("Object {} in bucket {} has no content length", object_name, bucket);
+    }
+
+    Ok((get_object_output.body, get_object_output.content_length.unwrap_or(0)))
 }

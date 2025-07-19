@@ -28,3 +28,11 @@ diesel::table! {
     }    
 }
 
+diesel::table! {
+    transfer_quota (id) {
+        id -> Int4,
+        quota_used -> BigInt,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}

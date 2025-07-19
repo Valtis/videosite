@@ -31,7 +31,6 @@ COPY ingestion/src /app/ingestion/src
 
 WORKDIR /app/ingestion
 
-RUN ls /app/ingestion/target/x86_64-unknown-linux-musl/release -la
 RUN touch /app/ingestion/src/main.rs && cargo build --release --target x86_64-unknown-linux-musl
 
 

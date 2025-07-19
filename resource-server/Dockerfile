@@ -8,6 +8,7 @@ RUN apk add --no-cache \
     libpq-dev
 
 COPY libs/auth-check /app/libs/auth-check
+COPY libs/audit /app/libs/audit
 
 COPY resource-server/Cargo.toml /app/resource-server/Cargo.toml
 COPY resource-server/Cargo.lock /app/resource-server/Cargo.lock
@@ -31,7 +32,6 @@ COPY resource-server/src /app/resource-server/src
 
 WORKDIR /app/resource-server
 
-RUN ls /app/resource-server/target/x86_64-unknown-linux-musl/release -la
 RUN touch /app/resource-server/src/main.rs && cargo build --release --target x86_64-unknown-linux-musl
 
 

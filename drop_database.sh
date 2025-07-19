@@ -31,6 +31,9 @@ case "$1" in
   ingestion)
     ./ingestion/db/drop_database.sh
     ;;
+  audit)
+    ./audit/db/drop_database.sh
+    ;;
   *)
     echo "Unknown project: $1"
     exit 1

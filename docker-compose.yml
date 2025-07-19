@@ -13,13 +13,30 @@ services:
     restart: unless-stopped
   auth:
     build: 
-      context: auth
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: auth/Dockerfile
     environment:
       - SIGNING_KEY=supersecretkeysupersecretkeysupersecretkey 
       - ISSUER=http://localhost:8080
       - AUDIENCE=http://localhost:8080
       - DATABASE_URL=postgres://root:root@postgresql:5432/user_db
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=keyid
+      - AWS_SECRET_ACCESS_KEY=supersecretkey
+      - AUDIT_EVENT_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/audit-event-queue
+    restart: unless-stopped
+  audit:
+    build: 
+      context: .
+      dockerfile: audit/Dockerfile
+    environment:
+      - DATABASE_URL=postgres://root:root@postgresql:5432/audit_db
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=keyid
+      - AWS_SECRET_ACCESS_KEY=supersecretkey
+      - AUDIT_EVENT_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/audit-event-queue
     restart: unless-stopped
   ingestion:
     build: 
@@ -36,7 +53,7 @@ services:
       - USE_PATH_STYLE_BUCKETS=true
       - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-finished-queue
       - RESOURCE_STATUS_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/resource-status-queue
-    restart: on-failure
+    restart: unless-stopped
   virus-scan:
     build: 
       context: virus-scan
@@ -103,6 +120,9 @@ services:
       - AWS_SECRET_ACCESS_KEY=supersecretkey
       - USE_PATH_STYLE_BUCKETS=true
       - RESOURCE_STATUS_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/resource-status-queue
+      - AUDIT_EVENT_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/audit-event-queue
+      - ENABLE_DATA_QUOTAS=true
+      - DAILY_DATA_QUOTA_MEGABYTES=1024
     depends_on:
       - localstack
     restart: unless-stopped

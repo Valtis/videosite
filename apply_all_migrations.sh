@@ -14,4 +14,5 @@ fi
 ./auth/db/apply_migrations.sh
 ./resource-server/db/apply_migrations.sh
 ./ingestion/db/apply_migrations.sh
+./audit/db/apply_migrations.sh
 

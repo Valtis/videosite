@@ -30,21 +30,16 @@ pub struct UserInfo {
 
 pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, StatusCode> {
 
+    let client_ip = get_client_ip(&req);
+
     let token = get_token(&req);
 
     if let Some(token) = token {
-        let res =  is_authenticated(&token).await;
+        let res =  is_authenticated(&token, client_ip).await;
         match res {
             Ok(true) => {
                 let claims = token.split('.').nth(1).unwrap();
-                // append the padding, as the base64 decoder requires it
-                let padded_claims = if claims.len() % 4 == 0 {
-                    claims.to_string()
-                } else {
-                    format!("{}{}", claims, "=".repeat(4 - claims.len() % 4))
-                };
-                let decoded_vec = base64::decode(padded_claims).unwrap();
-                let decoded = String::from_utf8(decoded_vec).unwrap();
+                let decoded = base_64_decode(claims).unwrap();
                 let user_info: UserInfo = serde_json::from_str(&decoded).unwrap();
 
                 req.extensions_mut().insert(user_info);
@@ -76,21 +71,16 @@ pub async fn add_user_info_to_request(
     next: Next,
 ) -> Result<Response, StatusCode> {
 
+    let client_ip = get_client_ip(&req);
     let token = get_token(&req);
 
     if let Some(token) = token {
-        let res =  is_authenticated(&token).await;
+    let res =  is_authenticated(&token, client_ip).await;
         match res {
             Ok(true) => {
                 let claims = token.split('.').nth(1).unwrap();
                 // append the padding, as the base64 decoder requires it
-                let padded_claims = if claims.len() % 4 == 0 {
-                    claims.to_string()
-                } else {
-                    format!("{}{}", claims, "=".repeat(4 - claims.len() % 4))
-                };
-                let decoded_vec = base64::decode(padded_claims).unwrap();
-                let decoded = String::from_utf8(decoded_vec).unwrap();
+                let decoded = base_64_decode(claims).unwrap();
                 let user_info = serde_json::from_str(&decoded).unwrap();
 
                 req.extensions_mut().insert::<Option<UserInfo>>(Some(user_info));
@@ -129,7 +119,7 @@ fn get_token(req: &Request) -> Option<String> {
     None
 }
 
-async fn is_authenticated(token: &str) -> Result<bool, reqwest::Error> {
+async fn is_authenticated(token: &str, client_ip: String) -> Result<bool, reqwest::Error> {
     
     let client = reqwest::Client::new();
     let auth_server_url = env::var("AUTH_SERVICE_URL").expect("AUTH_SERVICE_URL must be set");
@@ -140,6 +130,7 @@ async fn is_authenticated(token: &str) -> Result<bool, reqwest::Error> {
     let response = client
         .post(&format!("{}/auth/verify", auth_server_url))
         .header("Content-Type", "application/json")
+        .header("X-Client-IP", client_ip)
         .json(&map)
         .send()
         .await?;
@@ -149,4 +140,43 @@ async fn is_authenticated(token: &str) -> Result<bool, reqwest::Error> {
     } else {
         Ok(false)
     }
+}
+
+fn get_client_ip(req: &Request) -> String {
+    // Prioritize Amazon headers for client IP
+    // This uses the X-Forwarded-For header, which is set by the load balancer.
+    // Grab the leftmost IP address from the comma-separated list
+    if let Some(forwarded_for) = req.headers().get("X-Forwarded-For") {
+        if let Ok(ip) = forwarded_for.to_str() {
+            return ip.split(',').next().unwrap_or("unknown").trim().to_string();
+        }
+    }   
+
+    // If not set, we are running in thhe local dev env which uses Nginx. This is configured
+    // to set the X-Real-IP header to the client IP
+    if let Some(forwarded_for) = req.headers().get("X-Real-IP") {
+        if let Ok(ip) = forwarded_for.to_str() {
+            return ip.to_string();
+        }
+    }
+
+    // remote address is not useful, we will always get the IP of the proxy server,
+    // so we give up and return "unknown"
+    "unknown".to_string()
+}
+
+
+
+fn base_64_decode(input: &str) -> Result<String, base64::DecodeError> {
+
+    let config = base64::engine::general_purpose::GeneralPurposeConfig::new()
+        .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
+
+    let alphabet = base64::alphabet::STANDARD;
+    let engine = base64::engine::GeneralPurpose::new(&alphabet, config);
+
+    base64::Engine::decode(
+        &engine,
+        input.as_bytes()
+    ).map(|bytes| String::from_utf8(bytes).unwrap())
 }

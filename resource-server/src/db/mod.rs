@@ -9,6 +9,7 @@ use schema::*;
 // provided by the active resources view, which filters out deleted resources
 #[derive(Debug, Queryable, Selectable)]
 #[diesel(table_name = active_resources)]
+#[allow(dead_code)]
 pub struct Resource {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -23,6 +24,7 @@ pub struct Resource {
 // much like the Resource struct, but includes deleted_at field
 #[derive(Insertable)]
 #[diesel(table_name = app_resource)]
+#[allow(dead_code)]
 pub struct NewResource {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -30,6 +32,15 @@ pub struct NewResource {
     pub resource_name: String,
     pub resource_type: String,
     pub resource_status: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = transfer_quota)]
+#[allow(dead_code)]
+pub struct NewTransferQuota {
+    pub quota_used: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 pub fn create_resource(
@@ -85,7 +96,6 @@ pub fn update_resource_type(
 
 pub fn update_resource_public_status(
     resource_uuid: &str,
-    user_id: &str,
     is_public: bool,
 ) {
     let mut conn = get_connection();
@@ -116,6 +126,72 @@ pub fn get_active_resource_by_id(resource_id: &str) -> Option<Resource> {
         .first::<Resource>(&mut conn)
         .ok()
 }
+
+
+
+pub fn get_used_daily_quota() -> Option<i64> {
+    let mut conn = get_connection();
+
+    // get the quota used for today. Sort by created_at to get the latest entry and 
+    // check that it is from today
+    transfer_quota::table
+        .select(transfer_quota::quota_used)
+        .filter(transfer_quota::created_at.ge(chrono::Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap()))
+        .order(transfer_quota::created_at.desc())
+        .first(&mut conn)
+        .optional()
+        .expect("Error checking existing daily quota")
+}
+
+/// Update the daily quota used by a specified amount
+/// If the daily quota does not exist, it will be created.
+/// 
+/// # Arguments
+/// /// * `amount_used` - The amount to add to the daily quota used
+/// /// # Returns
+/// /// Result<(), String> - Ok if the update was successful, Err if there was an error
+pub fn update_daily_quota(amount_used: i64) -> Result<(), String> {
+
+    if amount_used <= 0 {
+        return Err("Amount used must be greater than zero".to_string());
+    }
+
+    let mut conn = get_connection();
+
+    let today = chrono::Utc::now().date_naive();
+    // Check if a daily quota entry exists for today
+    let existing_quota = get_used_daily_quota();
+
+    match existing_quota {
+        Some(quota_used) => {
+            // Update existing entry
+            diesel::update(
+                transfer_quota::table
+                .filter(transfer_quota::created_at.ge(today.and_hms_opt(0, 0, 0).unwrap())))
+                .set(transfer_quota::quota_used.eq(quota_used + amount_used))
+                .execute(&mut conn)
+                .map_err(|err| {
+                    format!("Error updating daily quota: {}", err)
+                })?;
+        }
+        None => {
+            // Insert new entry
+            let new_quota = NewTransferQuota {
+                quota_used: amount_used,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            };
+            diesel::insert_into(transfer_quota::table)
+                .values(&new_quota)
+                .execute(&mut conn)
+                .map_err(|err| {
+                    format!("Error inserting new daily quota: {}", err)
+                })?;
+        }
+    }
+
+    Ok(())
+}  
 
 
 fn get_connection() -> PgConnection {

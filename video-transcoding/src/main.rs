@@ -22,6 +22,7 @@ use reqwest;
 
 use shlex;
 
+#[allow(dead_code)]
 struct MetadataEvent {
     pub message: MetadataMessage,
     pub receipt_handle: String,
@@ -29,6 +30,7 @@ struct MetadataEvent {
 
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct MetadataMessage {
     pub presigned_url: String,
     pub object_name: String,
@@ -36,6 +38,7 @@ struct MetadataMessage {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct AudioData {
     pub duration: f64, // Duration in seconds
     pub bitrate: u32, // Bitrate in kbps
@@ -43,6 +46,7 @@ struct AudioData {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct VideoData {
     pub duration: f64, // Duration in seconds
     pub width: u32,   // Width in pixels
@@ -52,10 +56,12 @@ struct VideoData {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 enum FileType {
     Video{ video: VideoData, audio: Option<AudioData>}, 
 }
 
+#[allow(dead_code)]
 struct TranscodingOptions {
     width: u32,
     height: u32,
@@ -128,9 +134,9 @@ async fn main() {
         if let Some(video_metadata) = video_metadata_opt {
             tracing::info!("Received video metadata for {}: {:?}", video_metadata.message.object_name, video_metadata.message.file_type);
 
-            if let Ok(storage_path) = transcode_video(&video_metadata.message).await {
+            if let Ok(_) = transcode_video(&video_metadata.message).await {
                 tracing::info!("Video transcoding was completed successfully for {}", video_metadata.message.object_name);
-                queue_resource_processing_completed_event(&video_metadata.message.object_name, &storage_path).await;
+                queue_resource_processing_completed_event(&video_metadata.message.object_name).await;
             } else {
                 tracing::error!("Video transcoding failed for {}", video_metadata.message.object_name);
                 queue_resource_status_update_event(&video_metadata.message.object_name, "failed").await;
@@ -198,7 +204,7 @@ async fn receive_video_metadata_event(client: &Client, queue_url: &str) -> Resul
 
 async fn transcode_video(
     msg: &MetadataMessage,
-) -> Result<String, &'static str> {
+) -> Result<(), &'static str> {
     tracing::info!("Transcoding video: {}", msg.object_name);
     let FileType::Video { video, audio } = &msg.file_type;
 
@@ -223,7 +229,7 @@ async fn transcode_video(
     tracing::info!("FFMPEG string: ffmpeg {}", 
         ffmpeg_str    
     );
-    run_ffmpeg(&input_file_path, &workdir, &ffmpeg_str)
+    run_ffmpeg(&workdir, &ffmpeg_str)
         .await.map_err(|_| "FFMPEG process failed")?;
 
     // delete the input file after processing, as we will not need it anymore, and we will upload the transcoded files to S3
@@ -236,7 +242,7 @@ async fn transcode_video(
         .await
         .map_err(|_| "Failed to transfer files to S3")?;
     
-    Ok(format!("/{}/{}", RESOURCE_BUCKET_NAME, msg.object_name))
+    Ok(())
 }
 
 /// Downloads a file from a presigned URL and saves it to a temporary location
@@ -294,34 +300,7 @@ fn construct_video_transcoding_options_for_ffmpeg(
     audio_stats: &Option<AudioData>,
     input_file: &str,
 ) -> String  {
-    /* Example of a generated string (with newlines added for readability), as code below is a sea of string concatenations:
-    ffmpeg -i input.mp4 
-        -filter_complex 
-        "[0:v]split=5[v0in][v1in][v2in][v3in][v4in]; 
-        [v0in]scale=256:144[v0fps];[v0fps]fps=30[v0out]; 
-        [v1in]scale=480:270[v1fps];[v1fps]fps=30[v1out]; 
-        [v2in]scale=854:480[v2fps];[v2fps]fps=30[v2out]; 
-        [v3in]scale=1280:720[v3fps];[v3fps]fps=30[v3out]; 
-        [v4in]scale=1920:1080[v4fps];[v4fps]fps=30[v4out];" 
-        -map [v0out] -c:v:0 libx264 -b:v:0 225k -maxrate:v:0 337k -bufsize:v:0 450k -g 150 -keyint_min 150 -hls_time 5 -map_metadata -1 
-        -map [v1out] -c:v:1 libx264 -b:v:1 375k -maxrate:v:1 562k -bufsize:v:1 750k -g 150 -keyint_min 150 -hls_time 5 -map_metadata -1 
-        -map [v2out] -c:v:2 libx264 -b:v:2 1125k -maxrate:v:2 1687k -bufsize:v:2 2250k -g 150 -keyint_min 150 -hls_time 5 -map_metadata -1 
-        -map [v3out] -c:v:3 libx264 -b:v:3 1536k -maxrate:v:3 2304k -bufsize:v:3 3072k -g 150 -keyint_min 150 -hls_time 5 -map_metadata -1 
-        -map [v4out] -c:v:4 libx264 -b:v:4 2700k -maxrate:v:4 4050k -bufsize:v:4 5400k -g 150 -keyint_min 150 -hls_time 5 -map_metadata -1 
-        -map a:0 -c:a:0 aac -b:a:0 128k -ac:0 2 
-        -map a:0 -c:a:1 aac -b:a:1 128k -ac:1 2 
-        -map a:0 -c:a:2 aac -b:a:2 128k -ac:2 2 
-        -map a:0 -c:a:3 aac -b:a:3 128k -ac:3 2 
-        -map a:0 -c:a:4 aac -b:a:4 128k -ac:4 2 
-        -f hls 
-        -hls_playlist_type vod 
-        -hls_flags independent_segments 
-        -hls_segment_type mpegts 
-        -hls_segment_filename "stream_example_video_%v/data%04d.ts" 
-        -master_pl_name master.m3u8 
-        -var_stream_map "v:0,a:0 v:1,a:1 v:2,a:2" 
-        stream_example_video_%v/playlist.m3u8   
-    */
+
 
     let aspect_ration = video_stats.width as f64 / video_stats.height as f64;
 
@@ -447,9 +426,27 @@ fn construct_transcoding_options_with_parameters(
         height=height,
     );
 
+
+    /*
+        For each quality stream, we will map the video stream to the codec and set the bitrate parameters.
+        * codec (-c:v): libx264
+        * target bitrate (-b:v): minimum of video bitrate and transcoding options bitrate
+        * maximum bitrate (-maxrate): 1.5x target bitrate
+        * buffer size (-bufsize): 2x target bitrate
+        * group of pictures size in frames (-g): 5 seconds (keyframe interval)
+        * keyframe interval in frames (-keyint_min): target_fps * 5 seconds
+        * No scene change detection, force keyframes every 5 seconds (-sc_threshold 0)
+        * Another setting to REALLY force keyframes every 5 seconds (-force_key_frames "expr:gte(t,n_forced*5)")
+        * HLS segment length in seconds (-hls_time): 5 seconds`
+        * Metadata will be stripped from the output segments (-map_metadata -1)
+
+        Due to small differences and codec decisions, keyframes were observed to not necessarily be placed exactly at the 5 second mark,
+        hence why there are so many settings for telling the codec that yes, we want keyframes every 5 seconds.
+     */
     let map_string = format!(
         " -map \"[v{id}out]\" -c:v:{id} {codec} -b:v:{id} {target_video_bitrate}k -maxrate:v:{id} {maximum_bitrate}k \
-        -bufsize:v:{id} {buffer_size}k -g {keyframe_interval} -keyint_min {keyframe_interval} -hls_time {segment_length_seconds} -map_metadata -1",
+        -bufsize:v:{id} {buffer_size}k -g {keyframe_interval} -keyint_min {keyframe_interval} -sc_threshold 0 \
+        -force_key_frames \"expr:gte(t,n_forced*5)\" -hls_time {segment_length_seconds} -map_metadata -1",
         id=id,
         codec=VIDEO_CODEC,
         target_video_bitrate=target_video_bitrate / 1024,
@@ -464,7 +461,7 @@ fn construct_transcoding_options_with_parameters(
 }
 
 
-async fn run_ffmpeg(file_path: &str, workdir: &str, ffmpeg_string: &str) -> Result<(), io::Error> {
+async fn run_ffmpeg(workdir: &str, ffmpeg_string: &str) -> Result<(), io::Error> {
 
     let args = shlex::split(ffmpeg_string).expect("Failed to split ffmpeg command string");
 
@@ -529,7 +526,6 @@ async fn transfer_files_to_s3(workdir: &str, object_name: &str) -> Result<(), Bo
     tracing::info!("Creating S3 client");
     let s3_client = if let Ok(var) = env::var("USE_PATH_STYLE_BUCKETS") {
         if var.to_lowercase() == "true" {
-            tracing::info!("Using path-style buckets");
             let config_builder = s3_client.config().clone().to_builder();
             S3Client::from_conf(config_builder.force_path_style(true).build())
         } else {
@@ -539,18 +535,13 @@ async fn transfer_files_to_s3(workdir: &str, object_name: &str) -> Result<(), Bo
         s3_client
     };
 
-
-    tracing::info!("Listing files to upload from workdir: {}", workdir); 
     let files_to_upload = list_files_for_uploading(workdir).await?;
-
-    tracing::info!("Found {} files to upload", files_to_upload.len());
 
     for file_path in files_to_upload {
         upload_file(&s3_client, object_name, workdir, file_path).await?;
     }
 
 
-    tracing::info!("All files uploaded successfully");
     Ok(())
 }
 
@@ -572,7 +563,6 @@ async fn list_files_for_uploading(workdir: &str) -> Result<Vec<std::path::PathBu
         }
     }
     
-    tracing::info!("Files to upload: {:?}", files_to_upload);
     Ok(files_to_upload)
 }
 
@@ -601,7 +591,6 @@ async fn upload_file(client: &S3Client, object_name: &str, workdir: &str, path: 
 
     let upload_id = multi_part_upload.upload_id().expect("Upload ID not found");
 
-    tracing::info!("Created multipart upload with ID: {}", upload_id);
 
     let mut part_number = 1;
     let mut completed_parts: Vec<CompletedPart> = Vec::new();
@@ -637,7 +626,6 @@ async fn upload_file(client: &S3Client, object_name: &str, workdir: &str, path: 
         upload_chunk(&client, buffer, &object_name, upload_id, part_number, &mut completed_parts).await;
     }
 
-    tracing::info!("Completing multipart upload for object: {}", object_name);
 
     let completed_multipart_upload: CompletedMultipartUpload = CompletedMultipartUpload::builder()
         .set_parts(Some(completed_parts))
@@ -680,7 +668,7 @@ async fn upload_chunk(
         .build());
 }
 
-async fn queue_resource_processing_completed_event(object_name: &str, storage_path: &str) {
+async fn queue_resource_processing_completed_event(object_name: &str) {
     let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
     let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
 
@@ -705,7 +693,7 @@ async fn queue_resource_status_update_event(object_name: &str, status: &str) {
 
     let json_msg = serde_json::json!({
         "object_name": object_name,
-        "status": "failed",
+        "status": status
     }).to_string(); 
 
     tracing::info!("Sending resource status update message {} to SQS queue: {}", json_msg, queue_url);
