@@ -110,11 +110,18 @@ const TRANSCODING_OPTIONS_1080P: TranscodingOptions = TranscodingOptions {
     video_bitrate: 8*1024*1024,
 };
 
-const RESOURCE_BUCKET_NAME: &'static str = "resource";
+const RESOURCE_FOLDER_NAME: &'static str = "resource";
+
+fn get_object_path(object_name: &str) -> String {
+    format!("{}/{}", RESOURCE_FOLDER_NAME, object_name)
+}
+
+fn s3_bucket() -> String {
+    env::var("S3_BUCKET_NAME").expect("S3_BUCKET_NAME must be set")
+}
 
 #[tokio::main]
 async fn main() {
-    println!("Hello from async main");
     tracing_subscriber::fmt()
         .with_level(true)
         .with_max_level(filter::LevelFilter::INFO)
@@ -583,8 +590,8 @@ async fn upload_file(client: &S3Client, object_name: &str, workdir: &str, path: 
 
    
     let multi_part_upload = client.create_multipart_upload()
-        .bucket(RESOURCE_BUCKET_NAME) 
-        .key(object_name.clone())
+        .bucket(s3_bucket()) 
+        .key(get_object_path(&object_name))
         .send()
         .await
         .expect("Failed to create multipart upload");
@@ -632,8 +639,8 @@ async fn upload_file(client: &S3Client, object_name: &str, workdir: &str, path: 
         .build();
 
     client.complete_multipart_upload()
-        .bucket(RESOURCE_BUCKET_NAME)
-        .key(&object_name)
+        .bucket(s3_bucket())
+        .key(get_object_path(&object_name))
         .multipart_upload(completed_multipart_upload)
         .upload_id(upload_id)
         .send()
@@ -653,8 +660,8 @@ async fn upload_chunk(
 ) {
     let bytes = ByteStream::from(buffer);
     let part: aws_sdk_s3::operation::upload_part::UploadPartOutput = client.upload_part()
-        .bucket(RESOURCE_BUCKET_NAME) 
-        .key(object_name)
+        .bucket(s3_bucket()) 
+        .key(get_object_path(&object_name))
         .part_number(part_number)
         .upload_id(upload_id)
         .body(bytes.into())

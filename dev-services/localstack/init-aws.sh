@@ -1,6 +1,5 @@
 #!/bin/bash
-awslocal s3 mb s3://upload/
-awslocal s3 mb s3://resource/
+awslocal s3 mb s3://videosite-data/
 
 
 awslocal sqs create-queue --queue-name upload-finished-queue

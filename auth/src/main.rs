@@ -461,8 +461,8 @@ async fn main() {
         .layer(ip_source.into_extension());
         
         
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await
+    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await
         .expect("Failed to bind TCP listener");
 
     axum::serve(listener, app)

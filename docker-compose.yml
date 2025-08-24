@@ -50,6 +50,8 @@ services:
       - AWS_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=keyid
       - AWS_SECRET_ACCESS_KEY=supersecretkey
+      - AWS_ALLOW_UNSAFE_ENDPOINTS=true
+      - S3_BUCKET_NAME=videosite-data
       - USE_PATH_STYLE_BUCKETS=true
       - UPLOAD_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/upload-finished-queue
       - RESOURCE_STATUS_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/resource-status-queue
@@ -82,7 +84,6 @@ services:
       - AWS_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=keyid
       - AWS_SECRET_ACCESS_KEY=supersecretkey
-      - USE_PATH_STYLE_BUCKETS=true
       - VIRUS_SCAN_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/virus-scan-clear-queue
       - VIDEO_PROCESSING_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/video-processing-queue
       - AUDIO_PROCESSING_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/audio-processing-queue
@@ -99,6 +100,8 @@ services:
     environment:
       - AWS_ENDPOINT_URL=http://localstack:4566
       - AWS_ENDPOINT_URL_S3=http://localstack:4566
+      - S3_BUCKET_NAME=videosite-data
+      - AWS_ALLOW_UNSAFE_ENDPOINTS=true
       - AWS_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=keyid
       - AWS_SECRET_ACCESS_KEY=supersecretkey
@@ -117,6 +120,8 @@ services:
       - AUTH_SERVICE_URL=http://auth:3000
       - AWS_ENDPOINT_URL=http://localstack:4566
       - AWS_ENDPOINT_URL_S3=http://localstack:4566
+      - S3_BUCKET_NAME=videosite-data
+      - AWS_ALLOW_UNSAFE_ENDPOINTS=true
       - AWS_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=keyid
       - AWS_SECRET_ACCESS_KEY=supersecretkey

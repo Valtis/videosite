@@ -13,7 +13,7 @@ use axum_client_ip::{ClientIpSource, ClientIp};
 
 use uuid;
 
-use aws_sdk_s3 as s3;
+use aws_sdk_s3::{self as s3};
 use s3::presigning::PresigningConfig;
 use s3::primitives::ByteStream;
 use s3::types::CompletedMultipartUpload;
@@ -27,13 +27,19 @@ use tracing_subscriber::filter;
 
 use db::*;
 
-const UPLOAD_BUCKET: &str = "upload"; 
+const UPLOAD_FOLDER: &str = "upload"; 
 
+fn get_object_path(object_name: &str) -> String {
+    format!("{}/{}", UPLOAD_FOLDER, object_name)
+}
 
+fn s3_bucket() -> String {
+    env::var("S3_BUCKET_NAME").expect("S3_BUCKET_NAME must be set")
+}
 
 #[axum::debug_handler]
 async fn upload_handler(ClientIp(client_ip): ClientIp, user_info: Extension<UserInfo>, mut multipart: Multipart) -> Redirect {
-
+    tracing::info!("Starting file upload handler for user: {}", user_info.user_id);
     let user_total_quota = db::user_quota(&user_info.user_id);
     let mut used_quota = used_quota(&user_info.user_id);
 
@@ -122,7 +128,7 @@ async fn queue_upload_event(user_info: &UserInfo, presigned_uri: String, object_
         "object_name": object_name,
         "file_name": file_name,
         "status": "uploaded",
-        "origin_file_path": format!("/{}/{}", UPLOAD_BUCKET, object_name),
+        "origin_file_path": get_object_path(object_name), 
     }).to_string();
 
     tracing::info!("Sending message {} to SQS queue: {}", upload_json_msg, upload_queue_url);
@@ -188,8 +194,9 @@ async fn main() {
             )
         )
         .layer(ip_source.into_extension());
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await
+    
+    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await
         .expect("failed to bind tcp listener");
 
     axum::serve(listener, app)
@@ -218,8 +225,8 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String,
     tracing::info!("Uploading file to S3 with object name: {}", object_name);
 
     let multi_part_upload = client.create_multipart_upload()
-        .bucket(UPLOAD_BUCKET) 
-        .key(object_name.clone())
+        .bucket(s3_bucket()) 
+        .key(get_object_path(&object_name))
         .send()
         .await
         .expect("Failed to create multipart upload");
@@ -254,8 +261,8 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String,
         .build();
 
     client.complete_multipart_upload()
-        .bucket(UPLOAD_BUCKET)
-        .key(&object_name)
+        .bucket(s3_bucket())
+        .key(get_object_path(&object_name))
         .multipart_upload(completed_multipart_upload)
         .upload_id(upload_id)
         .send()
@@ -263,8 +270,8 @@ async fn upload_file(mut field: axum::extract::multipart::Field<'_>) -> (String,
         .expect("Failed to complete multipart upload");
 
     (client.get_object()
-        .bucket(UPLOAD_BUCKET)
-        .key(&object_name)
+        .bucket(s3_bucket())
+        .key(get_object_path(&object_name))
         .presigned(
             PresigningConfig::builder()
                 .expires_in(std::time::Duration::from_secs(3600*7)) // 7 hours, this could be a video and processing can take a while
@@ -289,8 +296,8 @@ async fn upload_chunk(
 ) {
     let bytes = ByteStream::from(buffer);
     let part = client.upload_part()
-        .bucket(UPLOAD_BUCKET) 
-        .key(object_name)
+        .bucket(s3_bucket()) 
+        .key(get_object_path(object_name))
         .part_number(part_number)
         .upload_id(upload_id)
         .body(bytes.into())
@@ -324,8 +331,8 @@ let config = aws_config::load_from_env().await;
 async fn delete_file(object_name: &str) {
     let client = get_s3_client().await;
     client.delete_object()
-        .bucket(UPLOAD_BUCKET)
-        .key(object_name)
+        .bucket(s3_bucket())
+        .key(get_object_path(object_name))
         .send()
         .await
         .expect("Failed to delete file from S3");

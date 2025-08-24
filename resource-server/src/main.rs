@@ -34,7 +34,12 @@ use model::*;
 use auth_check::{auth_middleware, add_user_info_to_request, UserInfo};
 use audit::{AuditEvent, send_audit_event};
 
-const RESOURCE_BUCKET: &'static str = "resource";
+const RESOURCE_FOLDER: &str = "resource";
+
+fn s3_bucket() -> String {
+    env::var("S3_BUCKET_NAME").expect("S3_BUCKET_NAME must be set")
+}
+
 
 /// List resources of the current user.
 /// 
@@ -217,6 +222,16 @@ async fn delete_message(client: &Client, queue_url: &str, receipt_handle: &str) 
 #[tokio::main]
 async fn main() {
 
+
+
+    tracing_subscriber::fmt()
+        .with_level(true)
+        .pretty()
+        .with_max_level(filter::LevelFilter::INFO)
+        .init();
+
+    tracing::info!("Starting resource server...");
+
     let ip_source_env = env::var("IP_SOURCE").unwrap_or_else(|_| "nginx".to_string());
     let ip_source = match ip_source_env.as_str() {
         "nginx" => ClientIpSource::RightmostXForwardedFor,
@@ -226,12 +241,6 @@ async fn main() {
             ClientIpSource::RightmostXForwardedFor
         } 
     };
-
-    tracing_subscriber::fmt()
-        .with_level(true)
-        .pretty()
-        .with_max_level(filter::LevelFilter::INFO)
-        .init();
 
     let app = Router::new()
         .route("/resource/health", get(|| async { "OK" }))
@@ -257,12 +266,13 @@ async fn main() {
         ).layer(ip_source.into_extension());
         
         
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await
+    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await
         .expect("Failed to bind TCP listener");
 
     let resource_status_listener_task = resource_status_listener();
 
+    tracing::info!("Listening on port {}", port);
     tokio::join!(
         resource_status_listener_task,
         axum::serve(
@@ -289,13 +299,12 @@ async fn send_resource(
                 return StatusCode::PAYMENT_REQUIRED.into_response();
             }
 
-            let object_name = format!("{}/{}", resource.id, file_in_directory);
+            let object_name = format!("{}/{}/{}", RESOURCE_FOLDER, resource.id, file_in_directory);
             let s3_client = get_s3_client().await;
           
 
             match get_object_stream(
                 s3_client,
-                RESOURCE_BUCKET,
                 &object_name,
             ).await {
                 Ok((stream, file_size)) => {
@@ -380,13 +389,12 @@ async fn get_s3_client() -> S3Client {
 
 async fn get_object_stream(
     s3_client: S3Client,
-    bucket: &str,
     object_name: &str,
 ) -> Result<(ByteStream, i64), DisplayErrorContext<impl std::error::Error>> {
-    tracing::info!("Getting object stream for bucket: {}, object: {}", bucket, object_name);
+    tracing::info!("Getting object stream for object: {}", object_name);
     let get_object_output = match s3_client
         .get_object()
-        .bucket(bucket)
+        .bucket(s3_bucket())
         .key(object_name)
         .send()
         .await {
@@ -398,7 +406,7 @@ async fn get_object_stream(
         };
 
     if get_object_output.content_length.is_none() {
-        tracing::warn!("Object {} in bucket {} has no content length", object_name, bucket);
+        tracing::warn!("Object {} has no content length", object_name);
     }
 
     Ok((get_object_output.body, get_object_output.content_length.unwrap_or(0)))
