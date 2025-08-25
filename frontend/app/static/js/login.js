@@ -19,7 +19,7 @@ async function login() {
     const password = document.getElementById("password").value;
 
     if (!username || !password) {
-        alert("Please enter both username and password.");
+        ErrorBanner.showError("Please enter both username and password.", document.getElementById('login_container'));
         return;
     }
 
@@ -40,9 +40,9 @@ async function login() {
             window.location.href = "index.html"; // Redirect to index page on success
         }
 
-        alert("Login failed: " + json.err);
+        ErrorBanner.showError("Login failed: " + json.err, document.getElementById('login_container'));
     } catch (error) {
         console.error('Error during login:', error);
-        alert("An error occurred during login. Please try again later.");
+        ErrorBanner.showError("An error occurred during login. Please try again later.", document.getElementById('login_container'));
     }
 }

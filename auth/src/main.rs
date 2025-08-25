@@ -16,7 +16,7 @@ use axum::{
         SET_COOKIE,
     },
     http::StatusCode,
-    response::{IntoResponse},
+    response::{IntoResponse, Redirect},
 };
 
 use axum_extra::extract::cookie::CookieJar;
@@ -27,7 +27,7 @@ use josekit::JoseError;
 use josekit::{jws::{JwsHeader, HS256}, jwt::{self, JwtPayload}, Value};
 
 use scrypt::{
-    password_hash::{PasswordHash, PasswordVerifier},
+    password_hash::{PasswordHash, PasswordHasher, SaltString, PasswordVerifier, rand_core::OsRng},
     Scrypt,
 };
 
@@ -411,6 +411,168 @@ async fn user_info(ClientIp(client_ip): ClientIp, cookie_jar: CookieJar) -> impl
 
 
 
+/// Changes the password for the logged-in user.
+/// We get the data  from a form submission with fields:
+/// * current_password
+/// * new_password
+/// * confirm_new_password
+///
+/// Verify the fields + JWT, and if all is good, update the password hash in the database.
+///  
+async fn change_password(ClientIp(client_ip): ClientIp, cookie_jar: CookieJar, form: axum::extract::Form<std::collections::HashMap<String, String>>) -> Redirect {
+
+    let token = match cookie_jar.get("session") {
+        Some(cookie) => cookie.value().to_string(),
+        None => { 
+            tracing::debug!("No session cookie found");
+            // not bothering wit audit event, probably some bot, scanner or other tool being 'funny'
+            return Redirect::to("/login?error=unauthorized");
+        }
+    };
+
+    if !verify_token(&token, client_ip.to_string().as_str()).await {
+            send_audit_event(
+                AuditEvent {
+                    event_type: "password_change_failed".to_string(),
+                    user_id: None,
+                    client_ip: &client_ip.to_string(),
+                    target: None,
+                    event_details: Some(serde_json::json!({
+                        "reason": "JWT verification failed"
+                    })),
+                }
+            ).await.unwrap();
+            return Redirect::to("/login?error=unauthorized");
+    }
+
+    let payload = get_payload(&token).expect("Failed to get payload from token").0;
+    let user_id = payload.subject().unwrap();
+
+    let current_password = form.get("current_password").unwrap_or(&"".to_string()).to_string();
+    let new_password = form.get("new_password").unwrap_or(&"".to_string()).to_string();
+    let confirm_new_password = form.get("confirm_password").unwrap_or(&"".to_string()).to_string();
+
+    if new_password.trim().is_empty() || current_password.trim().is_empty() || confirm_new_password.trim().is_empty() {
+            send_audit_event(
+                AuditEvent {
+                    event_type: "password_change_failed".to_string(),
+                    user_id: Some(user_id),
+                    client_ip: &client_ip.to_string(),
+                    target: None,
+                    event_details: Some(serde_json::json!({
+                        "reason": "One or more fields are empty"
+                    })),
+                }
+            ).await.unwrap();
+
+            return Redirect::to("/user.html?error=empty_fields");
+    }
+
+    if new_password != confirm_new_password {
+            send_audit_event(
+                AuditEvent {
+                    event_type: "password_change_failed".to_string(),
+                    user_id: Some(user_id),
+                    client_ip: &client_ip.to_string(),
+                    target: None,
+                    event_details: Some(serde_json::json!({
+                        "reason": "New password and confirmation do not match"
+                    })),
+                }
+            ).await.unwrap();
+
+            return Redirect::to("/user.html?error=password_mismatch");
+    }
+
+    if new_password == current_password {
+            send_audit_event(
+                AuditEvent {
+                    event_type: "password_change_failed".to_string(),
+                    user_id: Some(user_id),
+                    client_ip: &client_ip.to_string(),
+                    target: None,
+                    event_details: Some(serde_json::json!({
+                        "reason": "New password is the same as the current password"
+                    })),
+                }
+            ).await.unwrap();
+
+            return Redirect::to("/user.html?error=same_password");
+    }
+
+    if estimate_password_strength(&new_password) < 70 {
+            send_audit_event(
+                AuditEvent {
+                    event_type: "password_change_failed".to_string(),
+                    user_id: Some(user_id),
+                    client_ip: &client_ip.to_string(),
+                    target: None,
+                    event_details: Some(serde_json::json!({
+                        "reason": "New password too weak"
+                    })),
+                }
+            ).await.unwrap();
+
+            return Redirect::to("/user.html?error=weak_password");
+    }
+
+    let user_opt = db::get_user_by_id(user_id);
+    if user_opt.is_none() {
+        tracing::debug!("User not found: {}", user_id);
+        send_audit_event(
+            AuditEvent {
+                event_type: "password_change_failed".to_string(),
+                user_id: Some(user_id),
+                client_ip: &client_ip.to_string(),
+                target: None,
+                event_details: Some(serde_json::json!({
+                    "reason": "User not found"
+                })),
+            }
+        ).await.unwrap();
+        return Redirect::to("/login?error=unauthorized");
+    }
+
+    let user = user_opt.unwrap();
+
+    if !password_equals(&user.password_hash, &current_password) {
+        tracing::debug!("Invalid current password for user: {}", user.id);
+        send_audit_event(
+            AuditEvent {
+                event_type: "password_change_failed".to_string(),
+                user_id: Some(user_id),
+                client_ip: &client_ip.to_string(),
+                target: None,
+                event_details: Some(serde_json::json!({
+                    "reason": "Invalid current password"
+                })),
+            }
+        ).await.unwrap();
+        return Redirect::to("/user.html?error=invalid_current_password");
+    }
+
+    let salt = SaltString::generate(OsRng);
+    let password_hash = Scrypt
+        .hash_password(new_password.as_bytes(), &salt)
+        .expect("Failed to hash password")
+        .to_string();
+
+    db::update_user_password(user.id, &password_hash).expect("Failed to update user password");
+
+    send_audit_event(
+        AuditEvent {
+            event_type: "password_change_success".to_string(),
+            user_id: Some(user_id),
+            client_ip: &client_ip.to_string(),
+            target: None,
+            event_details: None,
+        }
+    ).await.unwrap();
+
+    Redirect::to("/index.html")
+}
+
+
 /// Checks if the provided password matches the hashed password.
 /// 
 /// # Arguments
@@ -458,6 +620,7 @@ async fn main() {
         .route("/auth/verify", post(verify_jwt))
         .route("/auth/login", post(login_handler))
         .route("/auth/info", get(user_info))
+        .route("/auth/change_password", post(change_password))
         .layer(ip_source.into_extension());
         
         
@@ -469,3 +632,52 @@ async fn main() {
         .await
         .expect("Failed to start server");
 }
+
+
+
+fn estimate_password_strength(password: &str) -> u32 {
+    // see if any of the following categories are present:
+    // lowercase, uppercase, digits, special characters
+    // if present, add the size of the set to the total set
+    // use this to create estimate of per-character entropy,
+    // and then multiply by length to get total entropy
+    //
+    // We do not grant any bonus-entropy for any other
+    // for the per-character entropy calculation, so
+    // this function generally underestimates the strength
+    // 
+    // and yes, this is very latin-alphabet centric, but
+    // that's acceptable for now at least, given the expected
+    // user base.
+
+    if password.trim().is_empty() {
+        return 0;
+    }
+
+    let charsets = [
+        "abcdefghijklmnopqrstuvwxyz",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "0123456789",
+        "!@#$%^&*()-_=+[]{}|;:'\",.<>?/`~",
+    ];
+
+    let mut charset_size = 0;
+    // vec should do just fine given we have at most entries
+    let mut included_sets = Vec::new(); 
+
+    for c in password.chars() {
+        for (i, charset) in charsets.iter().enumerate() {
+            if charset.contains(c) && !included_sets.contains(&i) {
+                included_sets.push(i);
+                charset_size += charset.len();
+            }
+        }
+    }
+
+    // bits of entropy per character is log2(charset_size)
+    let bits_per_char = (charset_size as f64).log2();
+
+    (bits_per_char * password.len() as f64) as u32
+}
+
+

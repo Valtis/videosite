@@ -55,10 +55,22 @@
     transition: background-color 0.3s ease;
 }
 
+#change_password_form button:disabled {
+    background-color: #6c757d;
+    cursor: not-allowed;
+    opacity: 0.65;
+    transition: none;
+}
+
 #change_password_form button:hover {
     background-color: #0056b3;
+}
+
+#change_password_form button:disabled:hover {
+    background-color: #6c757d;
 }
 
 #change_password_form button:active {
     background-color: #004085;
 }
+
