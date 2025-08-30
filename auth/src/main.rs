@@ -608,6 +608,7 @@ async fn main() {
     let ip_source = match ip_source_env.as_str() {
         "nginx" => ClientIpSource::RightmostXForwardedFor,
         "amazon" => ClientIpSource::CloudFrontViewerAddress,
+        "cloudflare" => ClientIpSource::CfConnectingIp,
         _ => { 
             tracing::warn!("Unknown IP source: {}, defaulting to Nginx", ip_source_env);
             ClientIpSource::RightmostXForwardedFor

@@ -116,6 +116,7 @@ function createVideoPlayerElement(resource) {
 
     const videoElement = document.createElement("video");
     videoElement.id = "video-" + resource.id;
+    videoElement.poster = `/resource/${resource.id}/thumbnail.jpg`;
 
     videoElement.className = "video-element";
 

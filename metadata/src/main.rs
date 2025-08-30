@@ -167,7 +167,7 @@ async fn main() {
             if file_type.is_media_type() {
                 tracing::info!("File {} is a recognized media type ({:?})", scan_event.message.object_name, file_type);
                 queue_metadata_extraction_completed_event(&scan_event.message.presigned_url, &scan_event.message.object_name, &file_type).await;
-                queue_resource_type_update_event(&scan_event.message.object_name, file_type.as_str()).await
+                queue_resource_type_update_event(&scan_event.message.object_name, &file_type).await
             } else {
                 tracing::warn!("File {} is not a recognized media type, skipping further processing.", scan_event.message.object_name);
                 queue_resource_status_update_event(&scan_event.message.object_name, "failed").await;
@@ -277,7 +277,6 @@ async fn get_file_metadata(presigned_url: &str) -> Result<MediaInfo, io::Error> 
     }
 
     let stdout_output = stdout_lines.join("\n");
-    tracing::info!("MediaInfo raw output: {}", stdout_output);
 
     let media_info: MediaInfo = serde_json::from_str(&stdout_output)
         .map_err(|err| {
@@ -285,7 +284,6 @@ async fn get_file_metadata(presigned_url: &str) -> Result<MediaInfo, io::Error> 
             io::Error::new(io::ErrorKind::InvalidData, "Failed to parse MediaInfo output")
         })?;
 
-    tracing::info!("MediaInfo output: {:?}", media_info);
 
     Ok(media_info)
    
@@ -304,8 +302,6 @@ fn create_metadata_object(media_info: &MediaInfo) -> Result<FileType, io::Error>
             audio_count,
             image_count,other_count }
         ) = general_track {
-        tracing::info!("General track found: file_size={}, duration={:?}, format={:?}, video_count={:?}, audio_count={:?}, image_count={:?}, other_count={:?}",
-            file_size, duration, format, video_count, audio_count, image_count, other_count);
         
         // isizes in case we for SOME reason get negative values. This would be very unexpected, but who knows if MediaInfo might have bugs, or other funky
         // behaviour. 
@@ -441,14 +437,14 @@ async fn queue_resource_status_update_event(object_name: &str, status: &str) {
         .expect("Failed to send resource status update message to SQS");
 }
 
-async fn queue_resource_type_update_event(object_name: &str, resource_type: &str) {
+async fn queue_resource_type_update_event(object_name: &str, metadata: &FileType) {
     let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
     let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
 
     let json_msg = serde_json::json!({
         "object_name": object_name,
         "status": "type_resolved",
-        "resource_type": resource_type,
+        "resource_type": metadata.as_str(),
     }).to_string(); 
 
     tracing::info!("Sending resource type update message {} to SQS queue: {}", json_msg, queue_url);

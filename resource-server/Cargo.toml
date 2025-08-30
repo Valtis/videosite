@@ -22,5 +22,7 @@ aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
 aws-sdk-s3 = { version = "1.96.0", features = ["rt-tokio"] }
 aws-sdk-sqs = "1.74.0"
 chrono = "0.4.41"
+url = "2.5.7"
+aws-smithy-types-convert = { version = "0.60.9", features = [ "convert-chrono" ] }
 auth-check = { path = "../libs/auth-check" }
 audit = { path = "../libs/audit" }

@@ -14,6 +14,20 @@ diesel::table! {
     }
 }
 
+// video metadata table
+diesel::table! {
+    video_metadata (resource_id) {
+        resource_id -> Uuid,
+        width -> Integer,
+        height -> Integer,
+        duration_seconds -> Integer,
+        bit_rate -> Integer,
+        frame_rate -> Float,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
 // resource view, filters out deleted resources
 diesel::table! {
     active_resources (id) {

@@ -43,6 +43,28 @@ pub struct NewTransferQuota {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Insertable)]
+#[diesel(table_name = video_metadata)]
+#[allow(dead_code)]
+pub struct NewVideoMetadata {
+    pub resource_id: Uuid,
+    pub width: i32,
+    pub height: i32,
+    pub duration_seconds: i32,
+    pub bit_rate: i32,
+    pub frame_rate: f32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub struct VideoMetadata {
+    pub width: i32,
+    pub height: i32,
+    pub duration_seconds: i32,
+    pub bit_rate: i32,
+    pub frame_rate: f32,
+}
+
 pub fn create_resource(
     resource_uuid: String,
     user_id: String,
@@ -92,6 +114,68 @@ pub fn update_resource_type(
         .set(app_resource::resource_type.eq(resource_type))
         .execute(&mut conn)
         .expect("Error updating resource type");
+}
+
+// highest quality defined where width x height is the largest
+pub fn get_highest_quality_video_metadata(resource_uuid: &str) -> Option<VideoMetadata> {
+    let mut conn = get_connection();
+
+    let result = video_metadata::table
+        .filter(video_metadata::resource_id.eq(Uuid::parse_str(resource_uuid).unwrap()))
+        .order_by((video_metadata::width * video_metadata::height).desc())
+        .select((
+            video_metadata::width,
+            video_metadata::height,
+            video_metadata::duration_seconds,
+            video_metadata::bit_rate,
+            video_metadata::frame_rate,
+        ))
+        .first::<(i32, i32, i32, i32, f32)>(&mut conn)
+        .map(|(width, height, duration_seconds, bit_rate, frame_rate)| VideoMetadata {
+            width: width,
+            height: height,
+            duration_seconds,
+            bit_rate: bit_rate,
+            frame_rate,
+        });
+
+    match result {
+        Ok(metadata) => Some(metadata),
+        Err(diesel::result::Error::NotFound) => None,
+        Err(err) => {
+            tracing::error!("Error loading video metadata: {}", err);
+            None
+        }
+    }
+}
+
+pub fn insert_video_metadata(
+    resource_uuid: &str,
+    width: u32,
+    height: u32,
+    duration_seconds: f64,
+    bit_rate: u32,
+    frame_rate: f64,
+) {
+    let mut conn = get_connection();
+
+    let resource_id = Uuid::parse_str(&resource_uuid).unwrap();
+    let now = chrono::Utc::now();
+    let new_metadata = NewVideoMetadata {
+        resource_id,
+        width: width as i32,
+        height: height as i32,
+        duration_seconds: duration_seconds as i32,
+        bit_rate: bit_rate as i32,
+        frame_rate: frame_rate as f32,
+        created_at: now,
+        updated_at: now,
+    };
+
+    diesel::insert_into(video_metadata::table)
+        .values(&new_metadata)
+        .execute(&mut conn)
+        .expect("Error inserting video metadata");
 }
 
 pub fn update_resource_public_status(
@@ -175,11 +259,12 @@ pub fn update_daily_quota(amount_used: i64) -> Result<(), String> {
                 })?;
         }
         None => {
+            let now = chrono::Utc::now();
             // Insert new entry
             let new_quota = NewTransferQuota {
                 quota_used: amount_used,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
+                created_at: now,
+                updated_at: now,
             };
             diesel::insert_into(transfer_quota::table)
                 .values(&new_quota)

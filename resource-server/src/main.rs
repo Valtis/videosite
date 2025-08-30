@@ -7,6 +7,7 @@ use aws_sdk_s3::{Client as S3Client};
 use aws_sdk_s3::error::DisplayErrorContext;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_sqs::Client;
+use aws_smithy_types_convert::date_time::DateTimeExt;
 
 use tracing_subscriber::filter;
 use serde_json;
@@ -16,7 +17,7 @@ use tower::ServiceBuilder;
 
 use axum::{
     body::{Body}, 
-    extract::{Extension, Json}, 
+    extract::{Extension, Json, Query}, 
     http::{StatusCode},
     middleware::from_fn, 
     response::{IntoResponse},
@@ -27,6 +28,9 @@ use axum::{
 use axum_client_ip::{ ClientIp, ClientIpSource };
 
 use http_body_util::StreamBody;
+
+
+use url::Url;
 
 use db::*;
 use model::*;
@@ -86,6 +90,15 @@ async fn get_stream_asset(
 }
 
 #[axum::debug_handler]
+async fn get_video_thumnail(
+    user_info: Extension<Option<UserInfo>>,
+    params: axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let resource_id = params.0;
+    send_resource(user_info.0, resource_id, "thumbnail.jpg".to_string(), "video").await
+}
+
+#[axum::debug_handler]
 async fn update_resource_public_status(
     user_info: Extension<UserInfo>,
     params: axum::extract::Path<String>,
@@ -118,6 +131,138 @@ async fn update_resource_public_status(
     return StatusCode::NOT_FOUND;
 }
 
+
+#[axum::debug_handler]
+async fn oembed_response(
+    query_params: Query<std::collections::HashMap<String, String>>,
+    user_info: Extension<Option<UserInfo>>,
+) -> impl IntoResponse {
+
+    let url_param = query_params.get("url");
+    if url_param.is_none() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    // we expect the url to be in the format https://domain/resource/player.html?resource_id={resource_id}
+    let url = url_param.unwrap();
+    let parsed_url = Url::parse(url);
+    if parsed_url.is_err() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let parsed_url = parsed_url.unwrap();
+    let query_pairs = parsed_url.query_pairs();
+    let resource_id_opt = query_pairs.into_owned().find(|(key, _)| key == "resource_id").map(|(_, value)| value);
+    if resource_id_opt.is_none() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let resource_id = resource_id_opt.unwrap();
+    
+
+    let resource = db::get_active_resource_by_id(&resource_id);
+    if let Some(resource) = resource {
+        // TODO: Images and audio have not been implemented yet
+        if resource.resource_type != "video" || !has_access_to_resource(&user_info.0, &resource) {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+
+        let domain = env::var("DOMAIN_URL").expect("DOMAIN_URL must be set");
+
+        let video_metadata = db::get_highest_quality_video_metadata(&resource_id);
+        if video_metadata.is_none() {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        let video_metadata = video_metadata.unwrap();
+
+        let iframe_link = format!(
+            r#"<iframe width="{width}" height="{height}" src="{domain}player.html?resource_id={resource_id}" frameborder="0" allow="autoplay; picture-in-picture" allowfullscreen></iframe>"#,
+            width=video_metadata.width,
+            height=video_metadata.height,
+            domain = domain,
+            resource_id = resource.id
+        );
+
+        let oembed = model::OEmbedResponse {
+            version: "1.0".to_string(),
+            title: resource.resource_name.clone(),
+            author_name: None, // TODO - implement fetching user info internally from auth service
+            author_url: None, // likewise
+            provider_name: Some("Hipsutuubi".to_string()),
+            provider_url: Some(domain.clone()),
+            cache_age: Some(3600), // 1 hour
+            thumbnail_url: Some(format!("{}/resource/{}/thumbnail.jpg", domain, resource.id)),
+            thumbnail_width: None,
+            thumbnail_height: None,
+            resource: model::OEmbedResourceType::Video {
+                html: iframe_link,
+                width: video_metadata.width,
+                height: video_metadata.height,
+            }
+        };
+
+        return (StatusCode::OK, Json(oembed)).into_response();
+
+    }
+    tracing::info!("DEBUG: Resource not found");
+    StatusCode::NOT_FOUND.into_response()
+}
+
+#[axum::debug_handler]
+async fn resource_metadata(
+    user_info: Extension<Option<UserInfo>>,
+    params: axum::extract::Path<String>,
+) -> impl IntoResponse {
+    tracing::info!("DEBUG: Fetching metadata for resource {}", params.0);
+    let resource_id = params.0;
+    let resource = db::get_active_resource_by_id(&resource_id);
+    if let Some(resource) = resource {
+        if !has_access_to_resource(&user_info.0, &resource) {
+            tracing::info!("DEBUG: No access to resource");
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        let resource_metadata = match resource.resource_type.as_str() {
+            "video" => {
+                let video_metadata = db::get_highest_quality_video_metadata(&resource_id);
+                if let Some(video_metadata) = video_metadata {
+                    model::ResourceMetadata::Video {
+                        width: video_metadata.width,
+                        height: video_metadata.height,
+                        duration_seconds: video_metadata.duration_seconds,
+                        bit_rate: video_metadata.bit_rate,
+                        frame_rate: video_metadata.frame_rate,
+                    }
+                } else {
+                    tracing::info!("DEBUG: No video metadata found for resource {}", resource_id);
+                    return StatusCode::NOT_FOUND.into_response();
+                }
+            },
+            "audio" => {
+                tracing::warn!("Audio resources are not yet supported");
+                return StatusCode::NOT_FOUND.into_response();
+            },
+            "image" => {
+                tracing::warn!("Image resources are not yet supported");
+                return StatusCode::NOT_FOUND.into_response();
+            },
+            _ => {
+                tracing::error!("Unknown resource type: {}", resource.resource_type);
+                return StatusCode::NOT_FOUND.into_response();
+            },
+        };
+
+        let response = model::ResourceMetadataResponse {
+            id: resource.id.to_string(),
+            name: resource.resource_name,
+            status: resource.resource_status,
+            resource_metadata,
+        };
+
+        return (StatusCode::OK, Json(response)).into_response(); 
+    }
+
+    tracing::info!("DEBUG: Resource {} not found", resource_id);
+    StatusCode::NOT_FOUND.into_response()
+}
+
 async fn resource_status_listener() {
     let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
     let client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
@@ -148,10 +293,32 @@ async fn resource_status_listener() {
                     update_resource_status(object_name, "processing".to_string());
                 },
                 ResourceStatusUpdateMessage::ResourceTypeResolved { object_name, resource_type } => {
-                    update_resource_type(object_name, resource_type);
-                },
-                ResourceStatusUpdateMessage::ResourceProcessed { object_name} => {
+                            update_resource_type(object_name.clone(),  resource_type.to_string()); 
+                } 
+                ResourceStatusUpdateMessage::ResourceProcessed { object_name, metadata} => {
                     update_resource_status(object_name.clone(), "processed".to_string());
+                    match metadata {
+                        model::ProducedResourceMetadata::Video(
+                            quality_versions                            
+                        ) => {
+
+                            for video_data in &quality_versions {
+                                db::insert_video_metadata(
+                                    &object_name, 
+                                    video_data.width, 
+                                    video_data.height, 
+                                    video_data.duration, 
+                                    video_data.bitrate, 
+                                    video_data.frame_rate);
+                            }
+                        },
+                        model::ProducedResourceMetadata::Audio(_) => {
+                            tracing::warn!("Audio files are not yet supported");
+                        },
+                        model::ProducedResourceMetadata::Image(_)=> {
+                            tracing::warn!("Image files are not yet supported");
+                        },
+                    }
                 },
             };        
 
@@ -191,7 +358,7 @@ async fn receive_resource_status_update_message(client: &Client, queue_url: &str
         let resource_update_message: ResourceStatusUpdateMessage = match serde_json::from_str(&body){
             Ok(msg) => msg,
             Err(err) => {
-                tracing::error!("Failed to parse message body as JSON: {}", err);
+                tracing::error!("Failed to parse message body as JSON: {} (message: {})", err, body);
                 continue;
             }
         };
@@ -236,6 +403,7 @@ async fn main() {
     let ip_source = match ip_source_env.as_str() {
         "nginx" => ClientIpSource::RightmostXForwardedFor,
         "amazon" => ClientIpSource::CloudFrontViewerAddress,
+        "cloudflare" => ClientIpSource::CfConnectingIp,
         _ => { 
             tracing::warn!("Unknown IP source: {}, defaulting to Nginx", ip_source_env);
             ClientIpSource::RightmostXForwardedFor
@@ -255,13 +423,24 @@ async fn main() {
             )
         )
         .nest(
+            "/resource",
+            Router::new()
+                .route("/oembed.json", get(oembed_response))
+                .layer(
+                    ServiceBuilder::new()
+                        .layer(from_fn(add_user_info_to_request))
+                )
+        )
+        .nest(
             "/resource/{resource_id}",
             Router::new()
                 .route("/master.m3u8", get(get_video_master_playlist))
+                .route("/thumbnail.jpg", get(get_video_thumnail))
                 .route("/stream_{index}/{file_in_directory}", get(get_stream_asset))
+                .route("/metadata", get(resource_metadata))
                 .layer(
-                ServiceBuilder::new()
-                    .layer(from_fn(add_user_info_to_request))
+                    ServiceBuilder::new()
+                        .layer(from_fn(add_user_info_to_request))
             )
         ).layer(ip_source.into_extension());
         
@@ -288,7 +467,6 @@ async fn send_resource(
     file_in_directory: String,
     resource_type: &str,
 ) -> impl IntoResponse {
-    tracing::info!("Sending resource {} for user {:?}", resource_id, user_info);
     let resource = db::get_active_resource_by_id(&resource_id);
     if let Some(resource) = resource {
         if resource.resource_type == resource_type && has_access_to_resource(&user_info, &resource) {
@@ -307,12 +485,12 @@ async fn send_resource(
                 s3_client,
                 &object_name,
             ).await {
-                Ok((stream, file_size)) => {
+                Ok((stream, file_size, _modified)) => {
                     update_quota_used(file_size as i64).unwrap_or_else(|err| {
                         tracing::error!("Failed to update transfer quota: {}", err);
                     });
                     
-                    let reader_stream = ReaderStream::new(stream.into_async_read());
+                    let reader_stream = ReaderStream::new(stream.into_async_read());                
                     return (StatusCode::OK, Body::from_stream(StreamBody::new(reader_stream))).into_response();
                 },
                 Err(err) => {
@@ -390,7 +568,7 @@ async fn get_s3_client() -> S3Client {
 async fn get_object_stream(
     s3_client: S3Client,
     object_name: &str,
-) -> Result<(ByteStream, i64), DisplayErrorContext<impl std::error::Error>> {
+) -> Result<(ByteStream, i64, chrono::DateTime<chrono::Utc>), DisplayErrorContext<impl std::error::Error>> {
     tracing::info!("Getting object stream for object: {}", object_name);
     let get_object_output = match s3_client
         .get_object()
@@ -409,5 +587,10 @@ async fn get_object_stream(
         tracing::warn!("Object {} has no content length", object_name);
     }
 
-    Ok((get_object_output.body, get_object_output.content_length.unwrap_or(0)))
+    let modified = get_object_output
+        .last_modified
+        .map(|dt| dt.to_chrono_utc())
+        .unwrap().unwrap();
+
+    Ok((get_object_output.body, get_object_output.content_length.unwrap_or(0), modified))
 }

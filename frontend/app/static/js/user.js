@@ -43,6 +43,9 @@ function checkPasswordForm(showError) {
     const submitButton = document.getElementById('change_password_submit');
     const changePasswordDiv = document.getElementById('change_password');
     
+    // Update password strength bar
+    updatePasswordStrengthBar(newPassword);
+    
     // all missing so no nagging under any case
     if (!currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()) {
         submitButton.disabled = true;
@@ -83,6 +86,70 @@ function checkPasswordForm(showError) {
     // if we reach here, everything is good
     submitButton.disabled = false;
 
+}
+
+
+function updatePasswordStrengthBar(password) {
+    const container = document.getElementById('password_strength_container');
+    const fill = document.getElementById('password_strength_fill');
+    const text = document.getElementById('password_strength_text');
+    
+    // Hide the bar if password is empty
+    if (!password || password.trim().length === 0) {
+        container.style.display = 'none';
+        return;
+    }
+    
+    // Show the bar
+    container.style.display = 'block';
+    
+    // Calculate strength
+    const entropy = estimatePasswordStrength(password);
+    
+    // Remove existing strength classes
+    fill.className = 'password-strength-fill';
+    
+    let strengthText = '';
+    let widthPercent = 0;
+    let strengthClass = '';
+    
+    if (entropy < 30) {
+        strengthText = 'Very Weak';
+        widthPercent = 20;
+        strengthClass = 'strength-weak';
+    } else if (entropy < 50) {
+        strengthText = 'Weak';
+        widthPercent = 40;
+        strengthClass = 'strength-weak';
+    } else if (entropy < 70) {
+        strengthText = 'Fair';
+        widthPercent = 60;
+        strengthClass = 'strength-fair';
+    } else if (entropy < 90) {
+        strengthText = 'Good';
+        widthPercent = 80;
+        strengthClass = 'strength-good';
+    } else if (entropy < 110) {
+        strengthText = 'Strong';
+        widthPercent = 95;
+        strengthClass = 'strength-strong';
+    } else {
+        strengthText = 'Very Strong';
+        widthPercent = 100;
+        strengthClass = 'strength-very-strong';
+    }
+    
+    // Update the bar
+    fill.style.width = widthPercent + '%';
+    fill.classList.add(strengthClass);
+    text.textContent = `Password Strength: ${strengthText}`;
+    
+    // Change text color to red if strength is below 70
+    if (entropy < 70) {
+        text.style.color = '#dc3545';
+    } else {
+        text.style.color = '#28a745';
+    }
 }
 
 

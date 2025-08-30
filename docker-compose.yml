@@ -130,9 +130,19 @@ services:
       - AUDIT_EVENT_QUEUE_URL=http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/audit-event-queue
       - ENABLE_DATA_QUOTAS=true
       - DAILY_DATA_QUOTA_MEGABYTES=1024
+      - DOMAIN_URL=http://localhost:8080
     depends_on:
       - localstack
     restart: unless-stopped
+  embed-tag-service:
+    build: 
+      context: . # Build context is the root of the project because we pull the libs directory
+      dockerfile: embed-tag-service/Dockerfile
+    environment:
+      - DOMAIN_URL=http://localhost:8080
+      - RESOURCE_SERVER_URL=http://resource-server:3000
+    depends_on: 
+      - resource-server
   postgresql:
     image: postgres:17.5
     environment:

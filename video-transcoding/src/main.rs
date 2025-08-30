@@ -37,7 +37,7 @@ struct MetadataMessage {
     pub file_type: FileType,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[allow(dead_code)]
 struct AudioData {
     pub duration: f64, // Duration in seconds
@@ -45,7 +45,7 @@ struct AudioData {
     pub sample_rate: u32, // Sample rate in Hz
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[allow(dead_code)]
 struct VideoData {
     pub duration: f64, // Duration in seconds
@@ -59,6 +59,13 @@ struct VideoData {
 #[allow(dead_code)]
 enum FileType {
     Video{ video: VideoData, audio: Option<AudioData>}, 
+}
+
+// single variant enum - the other transcoding services will
+// have other variants, consumer will handle all variants
+#[derive(Debug, serde::Serialize)]
+enum ProducedResourceMetadata {
+    Video(Vec<VideoData>), 
 }
 
 #[allow(dead_code)]
@@ -141,9 +148,9 @@ async fn main() {
         if let Some(video_metadata) = video_metadata_opt {
             tracing::info!("Received video metadata for {}: {:?}", video_metadata.message.object_name, video_metadata.message.file_type);
 
-            if let Ok(_) = transcode_video(&video_metadata.message).await {
+            if let Ok(produced_video_metadatas) = process_video(&video_metadata.message).await {
                 tracing::info!("Video transcoding was completed successfully for {}", video_metadata.message.object_name);
-                queue_resource_processing_completed_event(&video_metadata.message.object_name).await;
+                queue_resource_processing_completed_event(&video_metadata.message.object_name, ProducedResourceMetadata::Video(produced_video_metadatas)).await;
             } else {
                 tracing::error!("Video transcoding failed for {}", video_metadata.message.object_name);
                 queue_resource_status_update_event(&video_metadata.message.object_name, "failed").await;
@@ -208,10 +215,80 @@ async fn receive_video_metadata_event(client: &Client, queue_url: &str) -> Resul
 }
 
 
+async fn process_video(
+    msg: &MetadataMessage,
+) -> Result<Vec<VideoData>, &'static str> {
+
+    // create directory at /transcoding<object_name> to store the transcoded files
+    let workdir = format!("/transcoding/{}", msg.object_name);
+    std::fs::create_dir_all(&workdir).map_err(|_| "Failed to create work directory")?;
+    
+    let input_file_path = download_input_file(&msg.presigned_url, &msg.object_name, &workdir).await;
+
+    fn delete_workdir(workdir: &str) {
+        std::fs::remove_dir_all(workdir).unwrap_or_else(|err| {
+            tracing::error!("Failed to delete workdir {}: {}", workdir, err);
+        });
+        tracing::info!("Workdir {} deleted", workdir);
+    }
+
+    if let Ok(_) = extract_first_frame_as_jpeg(msg, &input_file_path, &workdir).await {
+        tracing::info!("First frame extraction completed successfully for {}", msg.object_name);
+    } else {
+        tracing::error!("First frame extraction failed for {}", msg.object_name);
+        queue_resource_status_update_event(&msg.object_name, "failed").await;
+        delete_workdir(&workdir);
+        return Err("First frame extraction failed");
+    }
+
+    let result = transcode_video(msg, &input_file_path, &workdir).await;
+
+    if let Err(err) = result {
+        tracing::error!("Video transcoding failed for {}: {}", msg.object_name, err);
+        delete_workdir(&workdir);
+        return Err("Video transcoding failed");
+    }    
+    let res = transfer_files_to_s3(&workdir, &msg.object_name)
+        .await
+        .map_err(|_| "Failed to transfer files to S3");
+    
+    
+    delete_workdir(&workdir);
+
+    if res.is_err() {
+        tracing::error!("Failed to transfer files to S3 for {}", msg.object_name);
+        return Err("Failed to transfer files to S3");
+    }
+
+
+    Ok(result.unwrap())    
+
+}
+
+async fn extract_first_frame_as_jpeg(
+    msg: &MetadataMessage,
+    input_file_path: &str,
+    workdir: &str,
+) -> Result<(), &'static str> {
+    tracing::info!("Extracting first frame as JPEG for video: {}", msg.object_name);
+    let output_jpeg_path = format!("{}/thumbnail.jpg", workdir);
+    let ffmpeg_str = format!("-i {input_file} -frames:v 1 -q:v 2 {output_jpeg}",
+        input_file=input_file_path,
+        output_jpeg=output_jpeg_path
+    );
+
+    run_ffmpeg(&workdir, &ffmpeg_str)
+        .await.map_err(|_| "FFMPEG process failed for first frame extraction")?;
+
+
+    Ok(())
+}
 
 async fn transcode_video(
     msg: &MetadataMessage,
-) -> Result<(), &'static str> {
+    input_file_path: &str,
+    workdir: &str,
+) -> Result<Vec<VideoData>, &'static str> {
     tracing::info!("Transcoding video: {}", msg.object_name);
     let FileType::Video { video, audio } = &msg.file_type;
 
@@ -222,20 +299,12 @@ async fn transcode_video(
         tracing::info!("No audio data available.");
     }
 
-    // create directory at /transcoding<object_name> to store the transcoded files
-    let workdir = format!("/transcoding/{}", msg.object_name);
-    std::fs::create_dir_all(&workdir).map_err(|_| "Failed to create work directory")?;
 
-    let input_file_path = download_input_file(&msg.presigned_url, &msg.object_name, &workdir).await;
-
-    let ffmpeg_str = construct_video_transcoding_options_for_ffmpeg(
+    let (ffmpeg_str, video_metadatas) = construct_video_transcoding_options_for_ffmpeg(
         video,
         audio,
         &input_file_path);
 
-    tracing::info!("FFMPEG string: ffmpeg {}", 
-        ffmpeg_str    
-    );
     run_ffmpeg(&workdir, &ffmpeg_str)
         .await.map_err(|_| "FFMPEG process failed")?;
 
@@ -244,12 +313,8 @@ async fn transcode_video(
     std::fs::remove_file(&input_file_path).expect("Failed to delete input file after processing");
     tracing::info!("Input file {} deleted after processing", input_file_path);
 
-    
-    transfer_files_to_s3(&workdir, &msg.object_name)
-        .await
-        .map_err(|_| "Failed to transfer files to S3")?;
-    
-    Ok(())
+
+    Ok(video_metadatas)
 }
 
 /// Downloads a file from a presigned URL and saves it to a temporary location
@@ -306,12 +371,12 @@ fn construct_video_transcoding_options_for_ffmpeg(
     video_stats: &VideoData,
     audio_stats: &Option<AudioData>,
     input_file: &str,
-) -> String  {
-
+) -> (String, Vec<VideoData>) { 
 
     let aspect_ration = video_stats.width as f64 / video_stats.height as f64;
 
     let mut encodings_to_use = vec![];
+    let mut video_metadatas = vec![];
 
     encodings_to_use.push(&TRANSCODING_OPTIONS_144P);
 
@@ -335,12 +400,14 @@ fn construct_video_transcoding_options_for_ffmpeg(
     let mut filter_strs = vec![];
     let mut map_strings = vec![];
     for (i, transcoding_options) in encodings_to_use.iter().enumerate() {
-        let (filter_str, map_string) = construct_transcoding_options_with_parameters(
+        let (filter_str, map_string, video_metadata) = construct_transcoding_options_with_parameters(
             i as u32,
             video_stats,
             aspect_ration,
             transcoding_options,
         );
+
+        video_metadatas.push(video_metadata);
 
         filter_strs.push(filter_str);
         map_strings.push(map_string);
@@ -402,7 +469,7 @@ fn construct_video_transcoding_options_for_ffmpeg(
         stream_map_str=stream_map_str
     );
 
-    ffmpeg_args
+    (ffmpeg_args, video_metadatas)
 }
 
 
@@ -411,7 +478,7 @@ fn construct_transcoding_options_with_parameters(
     video_stats: &VideoData,
     aspect_ratio: f64,
     transcoding_options: &TranscodingOptions,
-) -> (String, String) {
+) -> (String, String, VideoData) {
     //  -map "[v1out]" -c:v:0 libx264 -b:v:0 2000k -maxrate:v:0 3000k -bufsize:v:0 4000k -g 150 -keyint_min 150 -hls_time 150  \
     let width = min(transcoding_options.width, video_stats.width);
     let height = (transcoding_options.width as f64 / aspect_ratio) as u32;
@@ -463,7 +530,15 @@ fn construct_transcoding_options_with_parameters(
         segment_length_seconds=SEGMENT_LENGTH_SECONDS,
     );
 
-    (filter_str, map_string)
+    let video_metadata = VideoData {
+        width: width,
+        height: height,
+        duration: video_stats.duration,
+        bitrate: target_video_bitrate,
+        frame_rate: target_fps as f64,
+    };
+
+    (filter_str, map_string, video_metadata)
 
 }
 
@@ -675,13 +750,14 @@ async fn upload_chunk(
         .build());
 }
 
-async fn queue_resource_processing_completed_event(object_name: &str) {
+async fn queue_resource_processing_completed_event(object_name: &str, metadata: ProducedResourceMetadata) {
     let sqs_client = aws_sdk_sqs::Client::new(&aws_config::load_from_env().await);
     let queue_url = env::var("RESOURCE_STATUS_QUEUE_URL").expect("RESOURCE_STATUS_QUEUE_URL not set");
 
     let json_msg = serde_json::json!({
         "object_name": object_name,
         "status": "processed",
+        "metadata": metadata,
     }).to_string(); 
 
     tracing::info!("Sending resource processing completed message {} to SQS queue: {}", json_msg, queue_url);
