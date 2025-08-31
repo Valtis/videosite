@@ -16,11 +16,28 @@
     <body onload="onLoad()">
         <div id="topbar" class="topbar-container">
             <div class="topbar-left-container">
-                <div>
-                    <input type="file" name="file" id="fileInput" onchange="uploadFile(this)" />
-                </div>   
             </div>
             <div class="topbar-right-container">
+                <div class="upload-container">
+                    <label for="fileInput" class="upload-button">
+                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="7,10 12,15 17,10"></polyline>
+                            <line x1="12" y1="15" x2="12" y2="3"></line>
+                        </svg>
+                        Upload
+                    </label>
+                    <input type="file" name="file" id="fileInput" onchange="uploadFile(this);" />
+                    <div id="upload-progress-container" class="progress-container hidden">
+                        <div class="progress-info">
+                            <span id="upload-filename"></span>
+                            <span id="upload-progress-text">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="upload-progress-fill" class="progress-fill"></div>
+                        </div>
+                    </div>
+                </div>
                 <div class="tooltip">
                     <div id="quota" class="topbar-item"></div>
                     <span id="quota-tooltip" class="tooltiptext"></span>
