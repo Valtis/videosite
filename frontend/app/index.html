@@ -8,6 +8,7 @@
         <link rel="stylesheet" href="/static/css/player.css">
         <script src="/static/js/app.js" defer></script>
         <script src="/static/js/player.js" defer></script>
+        <script src="/static/js/upload.js" defer></script>
         
         <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.15.5/shaka-player.ui.js"></script>
         <link rel="stylesheet" href="https://ajax.googleapis.com/ajax/libs/shaka-player/4.15.5/controls.css">      
@@ -16,10 +17,7 @@
         <div id="topbar" class="topbar-container">
             <div class="topbar-left-container">
                 <div>
-                     <form id="upload" enctype="multipart/form-data" method="post" action="/upload/file">
-                        <input type="file" name="file" id="file" required>
-                        <button type="submit">Upload</button>
-                    </form>
+                    <input type="file" name="file" id="fileInput" onchange="uploadFile(this)" />
                 </div>   
             </div>
             <div class="topbar-right-container">

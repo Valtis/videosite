@@ -2,16 +2,16 @@
 
 
 function onLoad() {
-    load_resources();
+    loadResources();
     initQuota();
     checkBanners();
     setUserName();
     setInterval(() => {
-        load_resources();
+        loadResources();
     }, 5000);
 }
 
-async function load_resources() {
+async function loadResources() {
     // cookie for auth
     let response = await fetch(
         "/resource/list", {
@@ -43,15 +43,11 @@ async function load_resources() {
         const existingResourceDiv = document.getElementById(`resource-${resource.id}`);
         if (existingResourceDiv) {
             if (existingResourceDiv.status === resource.resource_status && existingResourceDiv.resource_type === resource.resource_type) {
-                console.log(`Resource ${resource.id} already exists with the same status and type. Skipping update.`);
                 return; // skip if the status and type are the same
             } else {
-                console.log(`Resource ${resource.id} exists but with different status or type. Updating...`);
                 resourcesList.removeChild(existingResourceDiv); // remove the old div
             }
-        } else {
-            console.log(`Creating new resource div for ${resource.id}.`);
-        }
+        } 
         
         const resourceDiv = document.createElement("div");
         resourceDiv.className = "resource-item";

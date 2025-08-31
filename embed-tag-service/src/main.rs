@@ -107,7 +107,6 @@ async fn generate_html(resource_id: &str, cookies: CookieJar) -> Result<axum::re
         .collect::<Vec<String>>()
         .join("; ");
 
-    tracing::info!("DEBUG: Using url: {}, with cookies: {}", metadata_url, hyper_cookies);
     let metadata_response = reqwest::Client::new()
         .get(&metadata_url)
         .header("Cookie", hyper_cookies)
@@ -135,7 +134,6 @@ async fn generate_html(resource_id: &str, cookies: CookieJar) -> Result<axum::re
     // placeholder: We have no descriptions available yet, use lorem ipsum
     let description = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
 
-    tracing::info!("Fetched metadata: {:?}", metadata);
 
     let html = match metadata.resource_metadata {
         ResourceMetadata::Video{ width, height, .. } => {

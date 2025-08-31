@@ -15,11 +15,10 @@ function onLoadPlayer() {
 
     const videoContainer = document.getElementById('videoContainer');
     
-    Promise.all([
-        initPlayer(videoContainer, video, resourceId),
-        createOpenGraphHeaderElements(resourceId),
-    ]).catch(error => {
-        console.error('Error initializing player or Open Graph tags:', error);
+    initPlayer(videoContainer, video, resourceId).then(() => {
+        console.log('Player initialized successfully.');
+    }).catch(error => {
+        console.error('Error initializing player:', error);
     });
 }
 
@@ -38,6 +37,12 @@ async function initPlayer(videoContainer, videoElement, resourceId) {
     }
 
     const player = new shaka.Player();
+    player.configure({
+        abr: {
+            defaultBandwidthEstimate: 5*1024*1024, // 5 Mbps
+        }
+
+    })
     player.attach(videoElement);
 
     const hlsUrl = `/resource/${resourceId}/master.m3u8`;
@@ -46,19 +51,19 @@ async function initPlayer(videoContainer, videoElement, resourceId) {
 
     const config = {
         'controlPanelElements': [
-        'play_pause',
-        'mute',
-        'volume',
-        'time_and_duration',
-        'spacer',
-        'fullscreen',
-        'overflow_menu',
+            'play_pause',
+            'mute',
+            'volume',
+            'time_and_duration',
+            'spacer',
+            'fullscreen',
+            'overflow_menu',
         ],
         'overflowMenuButtons': [
-        'airplay',
-        'cast',
-        'quality',
-        'playback_rate',
+            'airplay',
+            'cast',
+            'quality',
+            'playback_rate',
         ],
         'addSeekBar': true
     };
@@ -85,7 +90,7 @@ async function createOpenGraphHeaderElements(resourceId) {
 
 
     // {"id":"13be7cd1-ac1d-45c1-a79a-ec604a58f7d8","name":"20250824_135421000_iOS.MOV","status":"processed","type":"video","width":1920,"height":1080,"duration_seconds":1082130432,"bit_rate":12582912,"frame_rate":59.0}
-    let metadata = await fetch(`/resource/${resourceId}/metadata`);
+    let metadata = await fetch(`/resource/${resourceId}/metadata.json`);
 
     if (!metadata.ok) {
         console.error("Failed to fetch resource metadata:", metadata.statusText);
@@ -106,14 +111,14 @@ async function createOpenGraphHeaderElements(resourceId) {
 
     if (json.type === "video") {
 
-        let videoTags = [ 
+        videotags = [ 
             { property: "og:video", content: `${window.location.origin}/player.html?resource_id=${resourceId}` },
             { property: "og:video:type", content: "text/html" },
             { property: "og:video:width", content: json.width },
             { property: "og:video:height", content: json.height },
         ];
 
-        metaTags = metaTags.concat(videoTags);
+        metaTags = metaTags.concat(videotags);
     }
     metaTags.forEach(tagInfo => {
         let metaTag = document.createElement('meta');

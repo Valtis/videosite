@@ -16,8 +16,10 @@ tower = "0.5.2"
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1.96.0"
 aws-sdk-sqs = "1.74.0"
+crc32fast = "1.5.0"
 uuid =  { version = "1.17.0", features = ["serde", "v4"] }
-diesel = { version = "2.2.11", features = ["postgres", "uuid", "chrono" ] }
+diesel = { version = "2.2.11", features = ["postgres", "uuid", "chrono", "numeric" ] }
+bigdecimal = "0.4.8"
 pq-sys = { version = "0.7.2", features = ["bundled" ] }
 chrono = "0.4.41"
 audit = { path = "../libs/audit" }

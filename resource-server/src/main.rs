@@ -211,9 +211,9 @@ async fn resource_metadata(
     user_info: Extension<Option<UserInfo>>,
     params: axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    tracing::info!("DEBUG: Fetching metadata for resource {}", params.0);
     let resource_id = params.0;
     let resource = db::get_active_resource_by_id(&resource_id);
+
     if let Some(resource) = resource {
         if !has_access_to_resource(&user_info.0, &resource) {
             tracing::info!("DEBUG: No access to resource");
